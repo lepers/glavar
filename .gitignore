@@ -16,3 +16,4 @@
 #
 glavar
 .env
+*.db
