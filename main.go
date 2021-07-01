@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/pkg/errors"
@@ -21,10 +22,15 @@ var (
 	this = &struct {
 		*tele.User `json:"user"`
 
+		Cunts map[int]User `json:"cunts"`
+
 		UID  string `json:"uid"`
 		SID  string `json:"sid"`
 		CSRF string `json:"csrf_token"`
-	}{}
+		LM   int    `json:"last_message_id"`
+	}{
+		Cunts: make(map[int]User),
+	}
 
 	loggedIn = make(chan struct{})
 	// time since last error
@@ -42,11 +48,6 @@ func primo() {
 		}
 		<-time.After(5 * time.Second)
 	}
-}
-
-func poll() error {
-	const path = "https://leprosorium.ru/ajax/chat/load/"
-	return nil
 }
 
 func main() {
@@ -103,11 +104,7 @@ func save() {
 
 func login(username, password string) error {
 	const path = "https://leprosorium.ru/ajax/auth/login/"
-	req, err := http.NewRequest("POST", path, nil)
-	if err != nil {
-		return err
-	}
-
+	req, _ := http.NewRequest("POST", path, nil)
 	headers := map[string]string{
 		"Accept":          "*/*",
 		"Accept-Encoding": "gzip, deflate, br",
@@ -140,12 +137,12 @@ func login(username, password string) error {
 		return err
 	}
 	defer resp.Body.Close()
-	json := json.NewDecoder(resp.Body)
 	csrf := &struct {
 		Status string `json:"status"`
 		Token  string `json:"csrf_token"`
 	}{}
-	if err := json.Decode(csrf); err != nil {
+	err = json.NewDecoder(resp.Body).Decode(csrf)
+	if err != nil {
 		return errors.Wrap(err, "csrf could not be decoded")
 	}
 	if csrf.Status != "OK" {
@@ -160,6 +157,70 @@ func login(username, password string) error {
 			this.SID = cookie.Value
 		default:
 		}
+	}
+	return nil
+}
+
+func poll() error {
+	const path = "https://leprosorium.ru/ajax/chat/load/"
+
+	req, _ := http.NewRequest("POST", path, nil)
+	headers := map[string]string{
+		"Accept":          "*/*",
+		"Accept-Encoding": "gzip, deflate, br",
+		"Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
+		"Connection":      "keep-alive",
+		"Content-Length":  "0",
+		"Host":            "leprosorium.ru",
+		"Origin":          "https://leprosorium.ru",
+		"Referer":         "https://leprosorium.ru/",
+		"Sec-Fetch-Dest":  "empty",
+		"Sec-Fetch-Mode":  "cors",
+		"Sec-Fetch-Site":  "same-origin",
+		"Cookie":          fmt.Sprintf("wikilepro_session=%s; uid=%s; sid=%s", "", this.UID, this.SID),
+		"User-Agent":      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.75 Safari/537.36",
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	form := map[string]string{
+		"last_message_id": strconv.Itoa(this.LM),
+		"csrf_token":      this.CSRF,
+	}
+	for k, v := range form {
+		req.PostForm.Add(k, v)
+	}
+
+	resp, err := outbound.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var schema struct {
+		Messages []Message `json:"messages"`
+	}
+	err = json.NewDecoder(resp.Body).Decode(&schema)
+	if err != nil {
+		return errors.Wrap(err, "updates could not be decoded")
+	}
+
+	defer save()
+	for _, msg := range schema.Messages {
+		payload := fmt.Sprintf(messageCorr, msg.User.Login, msg.Body)
+		send := func() (err error) {
+			_, err = bot.Send(this, payload)
+			return
+		}
+		if err := send(); err != nil {
+			err = send()
+			if err != nil {
+				panic(err)
+			}
+		}
+		this.LM = msg.ID
+		this.Cunts[msg.User.ID] = msg.User
 	}
 	return nil
 }
