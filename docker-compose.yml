@@ -5,7 +5,7 @@ services:
     restart: always
     image: docker.pkg.github.com/lepers/glavar/glavar
     environment:
-      TOKEN:
+      BOT_TOKEN:
     volumes:
-      - glavar.db:/app/glavar.db
+      - glavar.json:/app/glavar.json
 
