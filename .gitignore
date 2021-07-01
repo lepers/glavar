@@ -17,3 +17,5 @@
 glavar
 .env
 *.db
+
+docker-compose.prod.yml

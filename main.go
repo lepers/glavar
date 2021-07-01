@@ -6,8 +6,10 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/http/cookiejar"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/pkg/errors"
@@ -19,30 +21,42 @@ var (
 
 	bot *tele.Bot
 
+	lepra, _ = url.Parse("https://leprosorium.ru")
+
 	this = &struct {
 		*tele.User `json:"user"`
 
+		Username string `json:"username"`
+
 		Cunts map[int]User `json:"cunts"`
+
+		Cookies []*http.Cookie `json:"cookies"`
 
 		UID  string `json:"uid"`
 		SID  string `json:"sid"`
 		CSRF string `json:"csrf_token"`
 		LM   int    `json:"last_message_id"`
+
+		Keywords []string `json:"keywords"`
 	}{
 		Cunts: make(map[int]User),
 	}
 
-	loggedIn = make(chan struct{})
+	authorized = make(chan struct{})
 	// time since last error
 	errt = time.Now().Add(-time.Hour)
+
+	ø = fmt.Sprintf
 )
 
 func primo() {
-	<-loggedIn
+	if authorized != nil {
+		<-authorized
+	}
 	for {
 		if err := poll(); err != nil {
 			if time.Now().Sub(errt) > 10*time.Minute {
-				bot.Send(this, fmt.Sprintf(errorCorr, err))
+				bot.Send(this, ø(errorCorr, err))
 				errt = time.Now()
 			}
 		}
@@ -51,7 +65,14 @@ func primo() {
 }
 
 func main() {
+	load()
+	defer save()
+
 	jar, _ := cookiejar.New(nil)
+	if this.Cookies != nil {
+		jar.SetCookies(lepra, this.Cookies)
+		authorized = nil
+	}
 	outbound = &http.Client{Jar: jar}
 
 	var err error
@@ -79,8 +100,18 @@ func main() {
 		}
 		this.User = c.Sender()
 		save()
-		close(loggedIn)
+		close(authorized)
 		return nil
+	})
+
+	bot.Handle("/keyword", func(c tele.Context) error {
+		args := c.Args()
+		if len(args) == 0 {
+			return c.Reply(keywordCorr)
+		}
+		this.Keywords = args
+		save()
+		return c.Reply(ø(keywordUpdatedCorr, this.Keywords))
 	})
 
 	go primo()
@@ -148,6 +179,7 @@ func login(username, password string) error {
 	if csrf.Status != "OK" {
 		return errors.New("NOT OK")
 	}
+	this.Username = username
 	this.CSRF = csrf.Token
 	for _, cookie := range resp.Cookies() {
 		switch cookie.Name {
@@ -158,6 +190,7 @@ func login(username, password string) error {
 		default:
 		}
 	}
+	this.Cookies = outbound.Jar.Cookies(lepra)
 	return nil
 }
 
@@ -177,7 +210,7 @@ func poll() error {
 		"Sec-Fetch-Dest":  "empty",
 		"Sec-Fetch-Mode":  "cors",
 		"Sec-Fetch-Site":  "same-origin",
-		"Cookie":          fmt.Sprintf("wikilepro_session=%s; uid=%s; sid=%s", "", this.UID, this.SID),
+		"Cookie":          ø("wikilepro_session=%s; uid=%s; sid=%s", "", this.UID, this.SID),
 		"User-Agent":      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.75 Safari/537.36",
 	}
 	for k, v := range headers {
@@ -208,9 +241,13 @@ func poll() error {
 
 	defer save()
 	for _, msg := range schema.Messages {
-		payload := fmt.Sprintf(messageCorr, msg.User.Login, msg.Body)
+		author, text := msg.User.Login, msg.Body
 		send := func() (err error) {
-			_, err = bot.Send(this, payload)
+			if personal(msg.Body) {
+				_, err = bot.Send(this, ø(personalCorr, author, text))
+				return
+			}
+			_, err = bot.Send(this, ø(corr, author, text), tele.Silent)
 			return
 		}
 		if err := send(); err != nil {
@@ -223,4 +260,13 @@ func poll() error {
 		this.Cunts[msg.User.ID] = msg.User
 	}
 	return nil
+}
+
+func personal(text string) bool {
+	for _, keyword := range append(this.Keywords, this.Username) {
+		if strings.Index(text, keyword) >= 0 {
+			return true
+		}
+	}
+	return false
 }
