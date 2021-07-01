@@ -19,3 +19,4 @@ glavar
 *.db
 
 docker-compose.prod.yml
+glavar.json

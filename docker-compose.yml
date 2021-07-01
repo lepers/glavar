@@ -7,5 +7,5 @@ services:
     environment:
       BOT_TOKEN:
     volumes:
-      - glavar.json:/app/glavar.json
+      - ./glavar.json:/app/glavar.json
 

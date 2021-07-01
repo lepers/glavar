@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -15,6 +16,8 @@ import (
 	"github.com/pkg/errors"
 	tele "gopkg.in/tucnak/telebot.v3"
 )
+
+const config = "glavar.json"
 
 var (
 	outbound *http.Client
@@ -66,6 +69,7 @@ func primo() {
 
 func main() {
 	load()
+	save()
 	defer save()
 
 	jar, _ := cookiejar.New(nil)
@@ -80,7 +84,7 @@ func main() {
 	bot, err = tele.NewBot(tele.Settings{
 		Token:     os.Getenv("BOT_TOKEN"),
 		Poller:    &tele.LongPoller{Timeout: 5 * time.Second},
-		ParseMode: tele.ModeMarkdownV2,
+		ParseMode: tele.ModeHTML,
 	})
 	if err != nil {
 		panic(err)
@@ -114,18 +118,61 @@ func main() {
 		return c.Reply(ø(keywordUpdatedCorr, this.Keywords))
 	})
 
+	bot.Handle(tele.OnText, func(c tele.Context) error {
+		const bufsize = 4 * 255 // utf8 * limit
+
+		var b bytes.Buffer
+		b.Grow(bufsize)
+
+		message := c.Text()
+		og := c.Message().ReplyTo
+		if og != nil {
+			i := strings.Index(og.Text, "<")
+			j := strings.Index(og.Text, ">")
+			if j > 0 {
+				message = og.Text[i+1:j] + ": " + message
+			}
+		}
+		for _, r := range message {
+			b.WriteRune(r)
+			if b.Len() == b.Cap() {
+				if err := broadcast(b.String()); err != nil {
+					// retry
+					err = broadcast(b.String())
+					if err != nil {
+						return c.Reply(ø(errorCorr, err))
+					}
+				}
+				b.Reset()
+			}
+		}
+		if b.Len() > 0 {
+			if err := broadcast(b.String()); err != nil {
+				// retry
+				err = broadcast(b.String())
+				if err != nil {
+					return c.Reply(ø(errorCorr, err))
+				}
+			}
+		}
+		return nil
+	})
+
+	bot.Handle(tele.OnPinned, func(c tele.Context) error {
+		return c.Delete()
+	})
+
 	go primo()
 	bot.Start()
 }
-
-const config = "glavar.json"
 
 func load() {
 	b, _ := ioutil.ReadFile(config)
 	json.Unmarshal(b, this)
 }
+
 func save() {
-	f, err := os.OpenFile(config, os.O_TRUNC, 0666)
+	f, err := os.Create(config)
 	if err != nil {
 		panic(err)
 	}
@@ -135,35 +182,16 @@ func save() {
 
 func login(username, password string) error {
 	const path = "https://leprosorium.ru/ajax/auth/login/"
-	req, _ := http.NewRequest("POST", path, nil)
-	headers := map[string]string{
-		"Accept":          "*/*",
-		"Accept-Encoding": "gzip, deflate, br",
-		"Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
-		"Connection":      "keep-alive",
-		"Content-Length":  "0",
-		"Host":            "leprosorium.ru",
-		"Origin":          "https://leprosorium.ru",
-		"Referer":         "https://leprosorium.ru/login/",
-		"Sec-Fetch-Dest":  "empty",
-		"Sec-Fetch-Mode":  "cors",
-		"Sec-Fetch-Site":  "same-origin",
-		"User-Agent":      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.75 Safari/537.36",
-	}
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
-
 	form := map[string]string{
 		"username":             username,
 		"password":             password,
 		"g-recaptcha-response": "",
 	}
+	pf := url.Values{}
 	for k, v := range form {
-		req.PostForm.Add(k, v)
+		pf.Add(k, v)
 	}
-
-	resp, err := outbound.Do(req)
+	resp, err := outbound.PostForm(path, pf)
 	if err != nil {
 		return err
 	}
@@ -196,36 +224,15 @@ func login(username, password string) error {
 
 func poll() error {
 	const path = "https://leprosorium.ru/ajax/chat/load/"
-
-	req, _ := http.NewRequest("POST", path, nil)
-	headers := map[string]string{
-		"Accept":          "*/*",
-		"Accept-Encoding": "gzip, deflate, br",
-		"Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
-		"Connection":      "keep-alive",
-		"Content-Length":  "0",
-		"Host":            "leprosorium.ru",
-		"Origin":          "https://leprosorium.ru",
-		"Referer":         "https://leprosorium.ru/",
-		"Sec-Fetch-Dest":  "empty",
-		"Sec-Fetch-Mode":  "cors",
-		"Sec-Fetch-Site":  "same-origin",
-		"Cookie":          ø("wikilepro_session=%s; uid=%s; sid=%s", "", this.UID, this.SID),
-		"User-Agent":      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.75 Safari/537.36",
-	}
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
-
 	form := map[string]string{
 		"last_message_id": strconv.Itoa(this.LM),
 		"csrf_token":      this.CSRF,
 	}
+	pf := url.Values{}
 	for k, v := range form {
-		req.PostForm.Add(k, v)
+		pf.Add(k, v)
 	}
-
-	resp, err := outbound.Do(req)
+	resp, err := outbound.PostForm(path, pf)
 	if err != nil {
 		return err
 	}
@@ -241,14 +248,24 @@ func poll() error {
 
 	defer save()
 	for _, msg := range schema.Messages {
+		this.LM = msg.ID
+		this.Cunts[msg.User.ID] = msg.User
+
 		author, text := msg.User.Login, msg.Body
-		send := func() (err error) {
+		if author == this.Username {
+			continue
+		}
+
+		send := func() error {
 			if personal(msg.Body) {
-				_, err = bot.Send(this, ø(personalCorr, author, text))
-				return
+				msg, err := bot.Send(this, ø(personalCorr, author, author, text))
+				if err == nil {
+					bot.Pin(msg)
+				}
+				return err
 			}
-			_, err = bot.Send(this, ø(corr, author, text), tele.Silent)
-			return
+			_, err := bot.Send(this, ø(corr, author, author, text), tele.Silent)
+			return err
 		}
 		if err := send(); err != nil {
 			err = send()
@@ -256,9 +273,26 @@ func poll() error {
 				panic(err)
 			}
 		}
-		this.LM = msg.ID
-		this.Cunts[msg.User.ID] = msg.User
 	}
+	return nil
+}
+
+func broadcast(message string) error {
+	const path = "https://leprosorium.ru/ajax/chat/add/"
+	form := map[string]string{
+		"last":       strconv.Itoa(this.LM),
+		"csrf_token": this.CSRF,
+		"body":       message,
+	}
+	pf := url.Values{}
+	for k, v := range form {
+		pf.Add(k, v)
+	}
+	resp, err := outbound.PostForm(path, pf)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
 	return nil
 }
 
