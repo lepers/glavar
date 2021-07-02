@@ -19,7 +19,7 @@ import (
 	tele "gopkg.in/tucnak/telebot.v3"
 )
 
-const config = "glavar.json"
+const config = "/app/glavar.json"
 
 var (
 	outbound *http.Client
