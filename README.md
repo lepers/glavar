@@ -10,7 +10,13 @@
 ### Установка
 Прозрачно собрать код клиента и запустить его можно при помощи [Docker](https://www.docker.com/).
 ```
-docker run docker.pkg.github.com/lepers/glavar/glavar:latest -e BOT_TOKEN=<ключ от BotFather>
+docker run -e BOT_TOKEN=<ключ от BotFather> badtrousers/glavar:latest
+```
+
+Чтобы бот работал после перезапуска режимы, используй `--always`. В комбинации с `-d` для запуска в фоновом режиме это позволяет один раз запустить и навсегда забыть — о существовании бота как программы. Можете не благодарить. В том смысле что благодарите не меня, благодарите облако.
+
+```
+docker run -d --always -e BOT_TOKEN=<ключ от BotFather> badtrousers/glavar:latest
 ```
 
 ![](sample.png)
