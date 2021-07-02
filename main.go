@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
+	"mime/multipart"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -23,8 +25,6 @@ var (
 	outbound *http.Client
 
 	bot *tele.Bot
-
-	lepra, _ = url.Parse("https://leprosorium.ru")
 
 	this = &struct {
 		*tele.User `json:"user"`
@@ -47,9 +47,9 @@ var (
 
 	authorized = make(chan struct{})
 	// time since last error
-	errt = time.Now().Add(-time.Hour)
-
-	ø = fmt.Sprintf
+	errt     = time.Now().Add(-time.Hour)
+	lepra, _ = url.Parse("https://leprosorium.ru")
+	ø        = fmt.Sprintf
 )
 
 func primo() {
@@ -59,7 +59,7 @@ func primo() {
 	for {
 		if err := poll(); err != nil {
 			if time.Now().Sub(errt) > 10*time.Minute {
-				bot.Send(this, ø(errorCorr, err))
+				bot.Send(this, ø(errorCue, err))
 				errt = time.Now()
 			}
 		}
@@ -91,13 +91,13 @@ func main() {
 	}
 
 	bot.Handle("/start", func(c tele.Context) error {
-		return c.Reply(startCorr)
+		return c.Reply(startCue)
 	})
 
 	bot.Handle("/login", func(c tele.Context) error {
 		args := c.Args()
 		if len(args) != 2 {
-			return c.Reply(naxyuCorr)
+			return c.Reply(naxyuCue)
 		}
 		if err := login(args[0], args[1]); err != nil {
 			return c.Reply(err.Error())
@@ -111,11 +111,11 @@ func main() {
 	bot.Handle("/keyword", func(c tele.Context) error {
 		args := c.Args()
 		if len(args) == 0 {
-			return c.Reply(keywordCorr)
+			return c.Reply(keywordCue)
 		}
 		this.Keywords = args
 		save()
-		return c.Reply(ø(keywordUpdatedCorr, this.Keywords))
+		return c.Reply(ø(keywordUpdatedCue, this.Keywords))
 	})
 
 	bot.Handle(tele.OnText, func(c tele.Context) error {
@@ -140,7 +140,7 @@ func main() {
 					// retry
 					err = broadcast(b.String())
 					if err != nil {
-						return c.Reply(ø(errorCorr, err))
+						return c.Reply(ø(errorCue, err))
 					}
 				}
 				b.Reset()
@@ -151,8 +151,72 @@ func main() {
 				// retry
 				err = broadcast(b.String())
 				if err != nil {
-					return c.Reply(ø(errorCorr, err))
+					return c.Reply(ø(errorCue, err))
 				}
+			}
+		}
+		return nil
+	})
+
+	bot.Handle(tele.OnPhoto, func(c tele.Context) error {
+		const path = "https://idiod.video/api/upload.php"
+
+		photo, err := bot.File(&c.Message().Photo.File)
+		if err != nil {
+			return c.Reply(ø(errorCue, err))
+		}
+
+		var b bytes.Buffer
+		w := multipart.NewWriter(&b)
+		fw, _ := w.CreateFormFile("file", "image.jpg")
+		if _, err = io.Copy(fw, photo); err != nil {
+			return c.Reply(ø(errorCue, err))
+		}
+		w.Close()
+		req, err := http.NewRequest("POST", path, &b)
+		if err != nil {
+			return c.Reply(ø(errorCue, err))
+		}
+		req.Header.Set("Content-Type", w.FormDataContentType())
+		resp, err := outbound.Do(req)
+		if err != nil {
+			// retry
+			<-time.After(15 * time.Second)
+			resp, err = outbound.Do(req)
+			if err != nil {
+				return c.Reply(ø(errorCue, err))
+			}
+		}
+		defer resp.Body.Close()
+		var payload struct {
+			Status     string `json:"status"`
+			Hash       string `json:"hash"`
+			URL        string `json:"url"`
+			Filetype   string `json:"filetype"`
+			DeleteCode string `json:"delete_code"`
+			DeleteURL  string `json:"delete_url"`
+		}
+		err = json.NewDecoder(resp.Body).Decode(&payload)
+		if err != nil {
+			return c.Reply(ø(errorCue, err))
+		}
+		if payload.Status != "ok" {
+			return c.Reply(ø(errorCue, payload))
+		}
+		message := "https://idiod.video/" + payload.URL
+		og := c.Message().ReplyTo
+		if og != nil {
+			i := strings.Index(og.Text, "<")
+			j := strings.Index(og.Text, ">")
+			if j > 0 {
+				message = og.Text[i+1:j] + ": " + message
+			}
+		}
+		if err := broadcast(message); err != nil {
+			// retry
+			err = broadcast(message)
+			if err != nil {
+				return c.Reply(ø(errorCue, err))
 			}
 		}
 		return nil
@@ -258,13 +322,13 @@ func poll() error {
 
 		send := func() error {
 			if personal(msg.Body) {
-				msg, err := bot.Send(this, ø(personalCorr, author, author, text))
+				msg, err := bot.Send(this, ø(cue, author, text))
 				if err == nil {
 					bot.Pin(msg)
 				}
 				return err
 			}
-			_, err := bot.Send(this, ø(corr, author, author, text), tele.Silent)
+			_, err := bot.Send(this, ø(cue, author, text), tele.Silent)
 			return err
 		}
 		if err := send(); err != nil {

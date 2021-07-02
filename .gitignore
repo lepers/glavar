@@ -14,9 +14,7 @@
 # Dependency directories (remove the comment below to include it)
 # vendor/
 #
-glavar
 .env
 *.db
-
 docker-compose.prod.yml
-glavar.json
+glavar*
