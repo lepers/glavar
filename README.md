@@ -7,4 +7,10 @@
 - Отправка изображений через https://idiod.video
 - Поиск по ключевым словам прикрепляет избранные сообщения
 
+### Установка
+Прозрачно собрать код клиента и запустить его можно при помощи [Docker](https://www.docker.com/).
+```
+docker run docker.pkg.github.com/lepers/glavar/glavar:latest -e BOT_TOKEN=<ключ от BotFather> -v glavar.json:/app/glavar.json
+```
+
 ![](sample.png)
