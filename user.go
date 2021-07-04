@@ -180,21 +180,25 @@ func (u *User) poll(subsite string) error {
 				continue
 			}
 			if u.personal(msg.Body) {
-				msg, err := bot.Send(u.T, ø(cue, author, text))
+				msg, err := bot.Send(u.T, ø(cue, author, text),
+					tele.NoPreview)
 				if err != nil {
 					// retry
-					msg, err = bot.Send(u.T, ø(cue, author, text))
+					msg, err = bot.Send(u.T, ø(cue, author, text),
+						tele.NoPreview)
 					if err != nil {
 						return err
 					}
 				}
 				bot.Pin(msg)
-				break
+				continue
 
 			}
-			_, err := bot.Send(u.T, ø(cue, author, text), tele.Silent)
+			_, err := bot.Send(u.T, ø(cue, author, text),
+				tele.Silent, tele.NoPreview)
 			if err != nil {
-				_, err = bot.Send(u.T, ø(cue, author, text), tele.Silent)
+				_, err = bot.Send(u.T, ø(cue, author, text),
+					tele.Silent, tele.NoPreview)
 				if err != nil {
 					return err
 				}
