@@ -173,39 +173,8 @@ func main() {
 		return nil
 	})
 
-	bot.Handle(tele.OnPhoto, func(c tele.Context) error {
-		u, err := getuser(c, welcomeCue)
-		if err != nil {
-			return err
-		}
-		photo, err := bot.File(&c.Message().Photo.File)
-		if err != nil {
-			return c.Reply(ø(errorCue, err))
-		}
-		message, err := u.upload(c, "image.jpg", photo)
-		if err != nil {
-			return err
-		}
-		og := c.Message().ReplyTo
-		if og != nil {
-			i := strings.Index(og.Text, "<")
-			j := strings.Index(og.Text, ">")
-			if j > 0 {
-				message = og.Text[i+1:j] + ": " + message
-			}
-		}
-		if err := u.broadcast(message); err != nil {
-			// retry
-			err = u.broadcast(message)
-			if err != nil {
-				return c.Reply(ø(errorCue, err))
-			}
-		}
-		return nil
-	})
-
+	bot.Handle(tele.OnPhoto, handleMedia)
 	bot.Handle(tele.OnAnimation, handleMedia)
-
 	bot.Handle(tele.OnPinned, func(c tele.Context) error {
 		return c.Delete()
 	})
