@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -201,4 +203,47 @@ func (u *User) poll(subsite string) error {
 	}
 
 	return nil
+}
+
+func (u *User) upload(c tele.Context, f string, r io.Reader) (string, error) {
+	const path = "https://idiod.video/api/upload.php"
+
+	var b bytes.Buffer
+	w := multipart.NewWriter(&b)
+	fw, _ := w.CreateFormFile("file", f)
+	if _, err := io.Copy(fw, r); err != nil {
+		return "", c.Reply(ø(errorCue, err))
+	}
+	w.Close()
+	req, err := http.NewRequest("POST", path, &b)
+	if err != nil {
+		return "", c.Reply(ø(errorCue, err))
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	resp, err := u.outbound().Do(req)
+	if err != nil {
+		// retry
+		<-time.After(15 * time.Second)
+		resp, err = u.outbound().Do(req)
+		if err != nil {
+			return "", c.Reply(ø(errorCue, err))
+		}
+	}
+	defer resp.Body.Close()
+	var payload struct {
+		Status     string `json:"status"`
+		Hash       string `json:"hash"`
+		URL        string `json:"url"`
+		Filetype   string `json:"filetype"`
+		DeleteCode string `json:"delete_code"`
+		DeleteURL  string `json:"delete_url"`
+	}
+	err = json.NewDecoder(resp.Body).Decode(&payload)
+	if err != nil {
+		return "", c.Reply(ø(errorCue, err))
+	}
+	if payload.Status != "ok" {
+		return "", c.Reply(ø(errorCue, payload))
+	}
+	return "https://idiod.video/" + payload.URL, nil
 }
