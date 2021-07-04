@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"mime/multipart"
-	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -180,52 +178,14 @@ func main() {
 		if err != nil {
 			return err
 		}
-
-		const path = "https://idiod.video/api/upload.php"
-
 		photo, err := bot.File(&c.Message().Photo.File)
 		if err != nil {
 			return c.Reply(ø(errorCue, err))
 		}
-
-		var b bytes.Buffer
-		w := multipart.NewWriter(&b)
-		fw, _ := w.CreateFormFile("file", "image.jpg")
-		if _, err = io.Copy(fw, photo); err != nil {
-			return c.Reply(ø(errorCue, err))
-		}
-		w.Close()
-		req, err := http.NewRequest("POST", path, &b)
+		message, err := u.upload(c, "image.jpg", photo)
 		if err != nil {
-			return c.Reply(ø(errorCue, err))
+			return err
 		}
-		req.Header.Set("Content-Type", w.FormDataContentType())
-		resp, err := u.outbound().Do(req)
-		if err != nil {
-			// retry
-			<-time.After(15 * time.Second)
-			resp, err = u.outbound().Do(req)
-			if err != nil {
-				return c.Reply(ø(errorCue, err))
-			}
-		}
-		defer resp.Body.Close()
-		var payload struct {
-			Status     string `json:"status"`
-			Hash       string `json:"hash"`
-			URL        string `json:"url"`
-			Filetype   string `json:"filetype"`
-			DeleteCode string `json:"delete_code"`
-			DeleteURL  string `json:"delete_url"`
-		}
-		err = json.NewDecoder(resp.Body).Decode(&payload)
-		if err != nil {
-			return c.Reply(ø(errorCue, err))
-		}
-		if payload.Status != "ok" {
-			return c.Reply(ø(errorCue, payload))
-		}
-		message := "https://idiod.video/" + payload.URL
 		og := c.Message().ReplyTo
 		if og != nil {
 			i := strings.Index(og.Text, "<")
@@ -244,6 +204,8 @@ func main() {
 		return nil
 	})
 
+	bot.Handle(tele.OnAnimation, handleMedia)
+
 	bot.Handle(tele.OnPinned, func(c tele.Context) error {
 		return c.Delete()
 	})
@@ -259,6 +221,49 @@ func main() {
 	}
 
 	bot.Start()
+}
+
+func mediaOf(msg *tele.Message) (string, io.Reader) {
+	switch {
+	case msg.Photo != nil:
+		r, _ := bot.File(&msg.Photo.File)
+		return "image.jpg", r
+	case msg.Animation != nil:
+		r, _ := bot.File(&msg.Animation.File)
+		return "image.mp4", r
+	}
+	return "", nil
+}
+
+func handleMedia(c tele.Context) error {
+	u, err := getuser(c, welcomeCue)
+	if err != nil {
+		return err
+	}
+	rf, r := mediaOf(c.Message())
+	if r == nil {
+		return c.Reply(ø(errorCue, "Unsupported media type."))
+	}
+	message, err := u.upload(c, rf, r)
+	if err != nil {
+		return err
+	}
+	og := c.Message().ReplyTo
+	if og != nil {
+		i := strings.Index(og.Text, "<")
+		j := strings.Index(og.Text, ">")
+		if j > 0 {
+			message = og.Text[i+1:j] + ": " + message
+		}
+	}
+	if err := u.broadcast(message); err != nil {
+		// retry
+		err = u.broadcast(message)
+		if err != nil {
+			return c.Reply(ø(errorCue, err))
+		}
+	}
+	return nil
 }
 
 func getuser(c tele.Context, cuecustom string) (*User, error) {
