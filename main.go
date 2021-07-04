@@ -8,78 +8,38 @@ import (
 	"io/ioutil"
 	"mime/multipart"
 	"net/http"
-	"net/http/cookiejar"
-	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/pkg/errors"
 	tele "gopkg.in/tucnak/telebot.v3"
 )
 
 const config = "/app/glavar.json"
 
 var (
-	outbound *http.Client
-
 	bot *tele.Bot
 
-	this = &struct {
-		*tele.User `json:"user"`
-
-		Username string `json:"username"`
-
-		Cunts map[int]User `json:"cunts"`
-
-		Cookies []*http.Cookie `json:"cookies"`
-
-		UID  string `json:"uid"`
-		SID  string `json:"sid"`
-		CSRF string `json:"csrf_token"`
-		LM   int    `json:"last_message_id"`
-
-		Keywords []string `json:"keywords"`
+	this = struct {
+		Cunts map[int]*User  `json:"cunts"`
+		LM    map[string]int `json:"lm"`
 	}{
-		Cunts: make(map[int]User),
+		Cunts: make(map[int]*User),
+		LM:    make(map[string]int),
 	}
 
-	authorized = make(chan struct{})
+	listening = map[string]bool{}
 	// time since last error
-	errt     = time.Now().Add(-time.Hour)
-	lepra, _ = url.Parse("https://leprosorium.ru")
-	ø        = fmt.Sprintf
+	errt = time.Now().Add(-time.Hour)
+	ø    = fmt.Sprintf
 )
 
-func primo() {
-	if authorized != nil {
-		<-authorized
-	}
-	for {
-		if err := poll(); err != nil {
-			if time.Now().Sub(errt) > 10*time.Minute {
-				bot.Send(this, ø(errorCue, err))
-				errt = time.Now()
-			}
-		}
-		<-time.After(5 * time.Second)
-	}
-}
-
 func main() {
+	var err error
+
 	load()
 	save()
 	defer save()
-
-	jar, _ := cookiejar.New(nil)
-	if this.Cookies != nil {
-		jar.SetCookies(lepra, this.Cookies)
-		authorized = nil
-	}
-	outbound = &http.Client{Jar: jar}
-
-	var err error
 
 	bot, err = tele.NewBot(tele.Settings{
 		Token:     os.Getenv("BOT_TOKEN"),
@@ -99,23 +59,75 @@ func main() {
 		if len(args) != 2 {
 			return c.Reply(naxyuCue)
 		}
-		if err := login(args[0], args[1]); err != nil {
+
+		tid := c.Sender().ID
+		u := this.Cunts[tid]
+		if u == nil {
+			u = new(User)
+			u.T = c.Sender()
+			u.Login = args[0]
+		}
+		if err := u.login(args[1]); err != nil {
 			return c.Reply(err.Error())
 		}
-		this.User = c.Sender()
+		this.Cunts[tid] = u
 		save()
-		close(authorized)
+
+		if !listening[u.Subsite] {
+			err = u.primo(u.Subsite)
+			if err != nil {
+				return c.Reply(ø(errorCue, err))
+			}
+			listening[u.Subsite] = true
+		}
 		return nil
 	})
 
-	bot.Handle("/keyword", func(c tele.Context) error {
-		args := c.Args()
-		if len(args) == 0 {
-			return c.Reply(keywordCue)
+	bot.Handle("/keywords", func(c tele.Context) error {
+		if len(c.Args()) == 0 {
+			return c.Reply(keywordIntroCue)
 		}
-		this.Keywords = args
+		u, err := getuser(c, welcomeCue)
+		if err != nil {
+			return err
+		}
+		u.Keywords = c.Args()
 		save()
-		return c.Reply(ø(keywordUpdatedCue, this.Keywords))
+		return c.Reply(ø(keywordsCue, u.Keywords))
+	})
+
+	bot.Handle("/subsite", func(c tele.Context) error {
+		u, err := getuser(c, welcomeCue)
+		if err != nil {
+			return err
+		}
+		if len(c.Args()) != 1 || c.Args()[0] == "" {
+			if u.Subsite == "" {
+				return c.Reply(ø(subsiteIntroCue, "главной"))
+			}
+			return c.Reply(ø(subsiteIntroCue, u.Subsite))
+		}
+
+		var subsite string
+		if len(c.Args()) == 1 {
+			subsite = c.Args()[0]
+		}
+		if subsite == "!" {
+			subsite = ""
+		}
+		if !listening[subsite] {
+			err = u.primo(subsite)
+			if err != nil {
+				return c.Reply(ø(errorCue, err))
+			}
+			listening[subsite] = true
+		}
+		u.Subsite = subsite
+		save()
+		if u.Subsite == "" {
+			return c.Reply(ø(subsiteChangedCue, "главную"))
+		}
+		return c.Reply(ø(subsiteChangedCue, u.Subsite))
 	})
 
 	bot.Handle(tele.OnText, func(c tele.Context) error {
@@ -123,6 +135,11 @@ func main() {
 
 		var b bytes.Buffer
 		b.Grow(bufsize)
+
+		u, err := getuser(c, welcomeCue)
+		if err != nil {
+			return err
+		}
 
 		message := c.Text()
 		og := c.Message().ReplyTo
@@ -136,9 +153,9 @@ func main() {
 		for _, r := range message {
 			b.WriteRune(r)
 			if b.Len() == b.Cap() {
-				if err := broadcast(b.String()); err != nil {
+				if err := u.broadcast(b.String()); err != nil {
 					// retry
-					err = broadcast(b.String())
+					err = u.broadcast(b.String())
 					if err != nil {
 						return c.Reply(ø(errorCue, err))
 					}
@@ -147,9 +164,9 @@ func main() {
 			}
 		}
 		if b.Len() > 0 {
-			if err := broadcast(b.String()); err != nil {
+			if err := u.broadcast(b.String()); err != nil {
 				// retry
-				err = broadcast(b.String())
+				err = u.broadcast(b.String())
 				if err != nil {
 					return c.Reply(ø(errorCue, err))
 				}
@@ -159,6 +176,11 @@ func main() {
 	})
 
 	bot.Handle(tele.OnPhoto, func(c tele.Context) error {
+		u, err := getuser(c, welcomeCue)
+		if err != nil {
+			return err
+		}
+
 		const path = "https://idiod.video/api/upload.php"
 
 		photo, err := bot.File(&c.Message().Photo.File)
@@ -178,11 +200,11 @@ func main() {
 			return c.Reply(ø(errorCue, err))
 		}
 		req.Header.Set("Content-Type", w.FormDataContentType())
-		resp, err := outbound.Do(req)
+		resp, err := u.outbound().Do(req)
 		if err != nil {
 			// retry
 			<-time.After(15 * time.Second)
-			resp, err = outbound.Do(req)
+			resp, err = u.outbound().Do(req)
 			if err != nil {
 				return c.Reply(ø(errorCue, err))
 			}
@@ -212,9 +234,9 @@ func main() {
 				message = og.Text[i+1:j] + ": " + message
 			}
 		}
-		if err := broadcast(message); err != nil {
+		if err := u.broadcast(message); err != nil {
 			// retry
-			err = broadcast(message)
+			err = u.broadcast(message)
 			if err != nil {
 				return c.Reply(ø(errorCue, err))
 			}
@@ -226,13 +248,31 @@ func main() {
 		return c.Delete()
 	})
 
-	go primo()
+	for _, u := range this.Cunts {
+		if !listening[u.Subsite] && u.logged() {
+			err = u.primo(u.Subsite)
+			if err != nil {
+				bot.Send(u.T, ø(errorCue, err)+" ["+u.Subsite+"]")
+			}
+			listening[u.Subsite] = true
+		}
+	}
+
 	bot.Start()
+}
+
+func getuser(c tele.Context, cuecustom string) (*User, error) {
+	tid := c.Sender().ID
+	u, ok := this.Cunts[tid]
+	if !ok || !u.logged() {
+		return nil, c.Reply(cuecustom)
+	}
+	return u, nil
 }
 
 func load() {
 	b, _ := ioutil.ReadFile(config)
-	json.Unmarshal(b, this)
+	json.Unmarshal(b, &this)
 }
 
 func save() {
@@ -241,130 +281,5 @@ func save() {
 		panic(err)
 	}
 	defer f.Close()
-	json.NewEncoder(f).Encode(this)
-}
-
-func login(username, password string) error {
-	const path = "https://leprosorium.ru/ajax/auth/login/"
-	form := map[string]string{
-		"username":             username,
-		"password":             password,
-		"g-recaptcha-response": "",
-	}
-	pf := url.Values{}
-	for k, v := range form {
-		pf.Add(k, v)
-	}
-	resp, err := outbound.PostForm(path, pf)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	csrf := &struct {
-		Status string `json:"status"`
-		Token  string `json:"csrf_token"`
-	}{}
-	err = json.NewDecoder(resp.Body).Decode(csrf)
-	if err != nil {
-		return errors.Wrap(err, "csrf could not be decoded")
-	}
-	if csrf.Status != "OK" {
-		return errors.New("NOT OK")
-	}
-	this.Username = username
-	this.CSRF = csrf.Token
-	for _, cookie := range resp.Cookies() {
-		switch cookie.Name {
-		case "uid":
-			this.UID = cookie.Value
-		case "sid":
-			this.SID = cookie.Value
-		default:
-		}
-	}
-	this.Cookies = outbound.Jar.Cookies(lepra)
-	return nil
-}
-
-func poll() error {
-	const path = "https://leprosorium.ru/ajax/chat/load/"
-	form := map[string]string{
-		"last_message_id": strconv.Itoa(this.LM),
-		"csrf_token":      this.CSRF,
-	}
-	pf := url.Values{}
-	for k, v := range form {
-		pf.Add(k, v)
-	}
-	resp, err := outbound.PostForm(path, pf)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	var schema struct {
-		Messages []Message `json:"messages"`
-	}
-	err = json.NewDecoder(resp.Body).Decode(&schema)
-	if err != nil {
-		return errors.Wrap(err, "updates could not be decoded")
-	}
-
-	defer save()
-	for _, msg := range schema.Messages {
-		this.LM = msg.ID
-		this.Cunts[msg.User.ID] = msg.User
-
-		author, text := msg.User.Login, msg.Body
-		if author == this.Username {
-			continue
-		}
-
-		send := func() error {
-			if personal(msg.Body) {
-				msg, err := bot.Send(this, ø(cue, author, text))
-				if err == nil {
-					bot.Pin(msg)
-				}
-				return err
-			}
-			_, err := bot.Send(this, ø(cue, author, text), tele.Silent)
-			return err
-		}
-		if err := send(); err != nil {
-			err = send()
-			if err != nil {
-				panic(err)
-			}
-		}
-	}
-	return nil
-}
-
-func broadcast(message string) error {
-	const path = "https://leprosorium.ru/ajax/chat/add/"
-	form := map[string]string{
-		"last":       strconv.Itoa(this.LM),
-		"csrf_token": this.CSRF,
-		"body":       message,
-	}
-	pf := url.Values{}
-	for k, v := range form {
-		pf.Add(k, v)
-	}
-	resp, err := outbound.PostForm(path, pf)
-	if err != nil {
-		return err
-	}
-	resp.Body.Close()
-	return nil
-}
-
-func personal(text string) bool {
-	for _, keyword := range append(this.Keywords, this.Username) {
-		if strings.Index(text, keyword) >= 0 {
-			return true
-		}
-	}
-	return false
+	json.NewEncoder(f).Encode(&this)
 }
