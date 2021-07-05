@@ -180,12 +180,10 @@ func (u *User) poll(subsite string) error {
 				continue
 			}
 			if u.personal(msg.Body) {
-				msg, err := bot.Send(u.T, ø(cue, author, text),
-					tele.NoPreview)
+				msg, err := bot.Send(u.T, ø(cue, author, text))
 				if err != nil {
 					// retry
-					msg, err = bot.Send(u.T, ø(cue, author, text),
-						tele.NoPreview)
+					msg, err = bot.Send(u.T, ø(cue, author, text))
 					if err != nil {
 						return err
 					}
@@ -195,10 +193,10 @@ func (u *User) poll(subsite string) error {
 
 			}
 			_, err := bot.Send(u.T, ø(cue, author, text),
-				tele.Silent, tele.NoPreview)
+				tele.Silent)
 			if err != nil {
 				_, err = bot.Send(u.T, ø(cue, author, text),
-					tele.Silent, tele.NoPreview)
+					tele.Silent)
 				if err != nil {
 					return err
 				}

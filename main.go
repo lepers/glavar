@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tele "gopkg.in/tucnak/telebot.v3"
 )
@@ -82,14 +83,26 @@ func main() {
 	})
 
 	bot.Handle("/keywords", func(c tele.Context) error {
-		if len(c.Args()) == 0 {
+		args := c.Args()
+		if len(args) == 0 || args[0] == "" {
 			return c.Reply(keywordIntroCue)
 		}
 		u, err := getuser(c, welcomeCue)
 		if err != nil {
 			return err
 		}
-		u.Keywords = c.Args()
+
+		k := make([]string, 0, 20)
+		n := len(args)
+		if n > 20 {
+			n = 20
+		}
+		for i := 0; i < n; i++ {
+			if utf8.RuneCountInString(args[i]) > 24 {
+				continue
+			}
+			k = append(k, args[i])
+		}
 		save()
 		return c.Reply(ø(keywordsCue, u.Keywords))
 	})
@@ -174,6 +187,7 @@ func main() {
 	})
 
 	bot.Handle(tele.OnPhoto, handleMedia)
+	bot.Handle(tele.OnVideo, handleMedia)
 	bot.Handle(tele.OnAnimation, handleMedia)
 	bot.Handle(tele.OnPinned, func(c tele.Context) error {
 		return c.Delete()
@@ -197,9 +211,12 @@ func mediaOf(msg *tele.Message) (string, io.Reader) {
 	case msg.Photo != nil:
 		r, _ := bot.File(&msg.Photo.File)
 		return "image.jpg", r
+	case msg.Video != nil:
+		r, _ := bot.File(&msg.Video.File)
+		return "video.mp4", r
 	case msg.Animation != nil:
 		r, _ := bot.File(&msg.Animation.File)
-		return "image.mp4", r
+		return "video.mp4", r
 	}
 	return "", nil
 }
