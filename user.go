@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bluele/gcache"
 	"github.com/pkg/errors"
 	tele "gopkg.in/tucnak/telebot.v3"
 )
@@ -97,8 +98,20 @@ func (u *User) login(password string) error {
 }
 
 func (u *User) broadcast(message string) error {
-	path := u.api("/ajax/chat/add/")
+	key := u.Login + "\n" + message
+	value, err := rates.Get(key)
+	if err == gcache.KeyNotFoundError {
+		value = 0
+		rates.SetWithExpire(key, 0, rateWindow)
+	}
+	rate := value.(int) + 1
+	rates.Set(key, rate)
+	if rate > 4 {
+		_, err := bot.Send(u.T, ratelimitCue)
+		return err
+	}
 
+	path := u.api("/ajax/chat/add/")
 	form := map[string]string{
 		"last":       strconv.Itoa(this.LM[u.Subsite]),
 		"csrf_token": u.Csrf,
@@ -172,34 +185,50 @@ func (u *User) poll(subsite string) error {
 	defer save()
 
 	for _, msg := range schema.Messages {
+		body := strings.TrimSpace(msg.Body)
+		if len(body) == 0 {
+			continue
+		}
 		this.LM[subsite] = msg.ID
 
-		author, text := msg.User.Login, msg.Body
+		author := msg.User.Login
+
+		key := author + "\n" + body
+		value, err := rates.Get(key)
+		if err == gcache.KeyNotFoundError {
+			value = 0
+		}
+		rate := value.(int) + 1
+		rates.SetWithExpire(key, rate, rateWindow)
+		if rate > 5 {
+			continue
+		}
+
 		for _, u := range this.Cunts {
 			if u.Login == author || u.Subsite != subsite {
 				continue
 			}
-			if u.personal(msg.Body) {
-				msg, err := bot.Send(u.T, ø(cue, author, text))
-				if err != nil {
-					// retry
-					msg, err = bot.Send(u.T, ø(cue, author, text))
-					if err != nil {
-						return err
-					}
-				}
-				bot.Pin(msg)
-				continue
-
+			opts := &tele.SendOptions{}
+			if rate > 1 {
+				opts.DisableWebPagePreview = true
 			}
-			_, err := bot.Send(u.T, ø(cue, author, text),
-				tele.Silent)
+
+			uber := u.personal(body)
+			if !uber {
+				opts.DisableNotification = true
+			}
+
+			body := ø(cue, author, body)
+			msg, err := bot.Send(u.T, body, opts)
 			if err != nil {
-				_, err = bot.Send(u.T, ø(cue, author, text),
-					tele.Silent)
+				// retry
+				msg, err = bot.Send(u.T, body, opts)
 				if err != nil {
 					return err
 				}
+			}
+			if uber {
+				bot.Pin(msg)
 			}
 		}
 	}

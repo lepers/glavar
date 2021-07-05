@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/bluele/gcache"
 	tele "gopkg.in/tucnak/telebot.v3"
 )
 
@@ -28,6 +29,9 @@ var (
 	}
 
 	listening = map[string]bool{}
+
+	rateWindow = 10 * time.Minute
+	rates      = gcache.New(1000).LRU().Build()
 	// time since last error
 	errt = time.Now().Add(-time.Hour)
 	ø    = fmt.Sprintf
@@ -84,7 +88,7 @@ func main() {
 
 	bot.Handle("/keywords", func(c tele.Context) error {
 		args := c.Args()
-		if len(args) == 0 || args[0] == "" {
+		if len(args) == 0 {
 			return c.Reply(keywordIntroCue)
 		}
 		u, err := getuser(c, welcomeCue)
@@ -103,6 +107,7 @@ func main() {
 			}
 			k = append(k, args[i])
 		}
+		u.Keywords = k
 		save()
 		return c.Reply(ø(keywordsCue, u.Keywords))
 	})
