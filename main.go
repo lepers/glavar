@@ -87,7 +87,7 @@ func main() {
 		if !listening[u.Subsite] {
 			pollq <- u.Subsite
 		}
-		return nil
+		return c.Delete()
 	})
 
 	bot.Handle("/logout", func(c tele.Context) error {

@@ -23,5 +23,5 @@ const subsiteIntroCue = `Сейчас ты читаешь чердак <b>%s</b>
 <code>/subsite shovinist</code>
 <code>/subsite глагне</code> чтобы переключиться обратно на главную.
 `
-const subsiteChangedCue = "🛎 Переключаюсь на <b>%s</b>."
+const subsiteChangedCue = "🛎 <b>%s</b>"
 const ratelimitCue = "⚠️  Придержи свое траханье!"
