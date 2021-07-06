@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -42,6 +43,10 @@ type Message struct {
 	User    User   `json:"user"`
 }
 
+func (m Message) String() string {
+	return fmt.Sprintf("[%d@%s>%s]%d", m.ID, m.User.Login, m.Body)
+}
+
 func (u *User) logged() bool {
 	return u.Csrf != ""
 }
@@ -55,8 +60,7 @@ func (u *User) outbound() *http.Client {
 	return client
 }
 
-func (u *User) api(path string) string {
-	var subsite = u.Subsite
+func (u *User) api(path string, subsite string) string {
 	if subsite != "" {
 		subsite += "."
 	}
@@ -64,7 +68,7 @@ func (u *User) api(path string) string {
 }
 
 func (u *User) login(password string) error {
-	path := u.api("/ajax/auth/login/")
+	path := u.api("/ajax/auth/login/", "")
 
 	form := map[string]string{
 		"username": u.Login,
@@ -111,7 +115,7 @@ func (u *User) broadcast(message string) error {
 		return err
 	}
 
-	path := u.api("/ajax/chat/add/")
+	path := u.api("/ajax/chat/add/", u.Subsite)
 	form := map[string]string{
 		"last":       strconv.Itoa(this.LM[u.Subsite]),
 		"csrf_token": u.Csrf,
@@ -144,22 +148,28 @@ func (u *User) primo(subsite string) error {
 	if err != nil {
 		return err
 	}
-	go func() {
+	go func(u *User, subsite string) {
 		for range time.NewTicker(5 * time.Second).C {
 			err = u.poll(subsite)
 			if err != nil && err != io.EOF {
-				if time.Now().Sub(errt) > 10*time.Minute {
-					bot.Send(u.T, ø(errorCue, err)+" ["+subsite+"]")
-					errt = time.Now()
+				// retry
+				err = u.poll(subsite)
+				if err != nil {
+					fmt.Printf("primo fail for %s on %s\n",
+						u.Login, subsite)
+					listening[subsite] = false
+					pollq <- subsite
+					break
 				}
 			}
 		}
-	}()
+	}(u, subsite)
+	listening[subsite] = true
 	return nil
 }
 
 func (u *User) poll(subsite string) error {
-	path := u.api("/ajax/chat/load/")
+	path := u.api("/ajax/chat/load/", subsite)
 	form := map[string]string{
 		"last_message_id": strconv.Itoa(this.LM[subsite]),
 		"csrf_token":      u.Csrf,
@@ -185,11 +195,11 @@ func (u *User) poll(subsite string) error {
 	defer save()
 
 	for _, msg := range schema.Messages {
+		this.LM[subsite] = msg.ID
 		body := strings.TrimSpace(msg.Body)
 		if len(body) == 0 {
 			continue
 		}
-		this.LM[subsite] = msg.ID
 
 		author := msg.User.Login
 
@@ -204,7 +214,7 @@ func (u *User) poll(subsite string) error {
 			continue
 		}
 
-		for _, u := range this.Cunts {
+		for id, u := range this.Cunts {
 			if u.Login == author || u.Subsite != subsite {
 				continue
 			}
@@ -221,10 +231,14 @@ func (u *User) poll(subsite string) error {
 			body := ø(cue, author, body)
 			msg, err := bot.Send(u.T, body, opts)
 			if err != nil {
+				if err == tele.ErrBlockedByUser {
+					delete(this.Cunts, id)
+					continue
+				}
 				// retry
 				msg, err = bot.Send(u.T, body, opts)
 				if err != nil {
-					return err
+					continue
 				}
 			}
 			if uber {

@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bluele/gcache"
+	"github.com/pkg/errors"
 	tele "gopkg.in/tucnak/telebot.v3"
 )
 
@@ -35,6 +36,10 @@ var (
 	// time since last error
 	errt = time.Now().Add(-time.Hour)
 	ø    = fmt.Sprintf
+
+	pollq = make(chan string, 1)
+
+	ErrNotLogged = errors.New("not logged in")
 )
 
 func main() {
@@ -91,9 +96,9 @@ func main() {
 		if len(args) == 0 {
 			return c.Reply(keywordIntroCue)
 		}
-		u, err := getuser(c, welcomeCue)
+		u, err := getuser(c)
 		if err != nil {
-			return err
+			return c.Reply(welcomeCue)
 		}
 
 		k := make([]string, 0, 20)
@@ -113,11 +118,11 @@ func main() {
 	})
 
 	bot.Handle("/subsite", func(c tele.Context) error {
-		u, err := getuser(c, welcomeCue)
+		u, err := getuser(c)
 		if err != nil {
-			return err
+			return c.Reply(welcomeCue)
 		}
-		if len(c.Args()) != 1 || c.Args()[0] == "" {
+		if len(c.Args()) != 1 {
 			if u.Subsite == "" {
 				return c.Reply(ø(subsiteIntroCue, "главной"))
 			}
@@ -128,22 +133,18 @@ func main() {
 		if len(c.Args()) == 1 {
 			subsite = c.Args()[0]
 		}
-		if subsite == "!" {
+		if subsite == "глагне" || subsite == "главная" {
 			subsite = ""
 		}
 		if !listening[subsite] {
-			err = u.primo(subsite)
-			if err != nil {
-				return c.Reply(ø(errorCue, err))
-			}
-			listening[subsite] = true
+			pollq <- subsite
 		}
 		u.Subsite = subsite
 		save()
-		if u.Subsite == "" {
+		if subsite == "" {
 			return c.Reply(ø(subsiteChangedCue, "главную"))
 		}
-		return c.Reply(ø(subsiteChangedCue, u.Subsite))
+		return c.Reply(ø(subsiteChangedCue, subsite))
 	})
 
 	bot.Handle(tele.OnText, func(c tele.Context) error {
@@ -152,9 +153,9 @@ func main() {
 		var b bytes.Buffer
 		b.Grow(bufsize)
 
-		u, err := getuser(c, welcomeCue)
+		u, err := getuser(c)
 		if err != nil {
-			return err
+			return c.Reply(welcomeCue)
 		}
 
 		message := c.Text()
@@ -198,15 +199,28 @@ func main() {
 		return c.Delete()
 	})
 
-	for _, u := range this.Cunts {
-		if !listening[u.Subsite] && u.logged() {
-			err = u.primo(u.Subsite)
-			if err != nil {
-				bot.Send(u.T, ø(errorCue, err)+" ["+u.Subsite+"]")
+	go func() {
+		for subsite := range pollq {
+			for _, u := range this.Cunts {
+				if !u.logged() {
+					continue
+				}
+				if err := u.primo(subsite); err == nil {
+					break
+				}
 			}
-			listening[u.Subsite] = true
 		}
-	}
+	}()
+
+	go func() {
+		subsites := map[string]bool{}
+		for _, u := range this.Cunts {
+			subsites[u.Subsite] = true
+		}
+		for subsite := range subsites {
+			pollq <- subsite
+		}
+	}()
 
 	bot.Start()
 }
@@ -227,9 +241,9 @@ func mediaOf(msg *tele.Message) (string, io.Reader) {
 }
 
 func handleMedia(c tele.Context) error {
-	u, err := getuser(c, welcomeCue)
+	u, err := getuser(c)
 	if err != nil {
-		return err
+		return c.Reply(welcomeCue)
 	}
 	rf, r := mediaOf(c.Message())
 	if r == nil {
@@ -257,11 +271,11 @@ func handleMedia(c tele.Context) error {
 	return nil
 }
 
-func getuser(c tele.Context, cuecustom string) (*User, error) {
+func getuser(c tele.Context) (*User, error) {
 	tid := c.Sender().ID
 	u, ok := this.Cunts[tid]
 	if !ok || !u.logged() {
-		return nil, c.Reply(cuecustom)
+		return nil, ErrNotLogged
 	}
 	return u, nil
 }
@@ -277,5 +291,7 @@ func save() {
 		panic(err)
 	}
 	defer f.Close()
-	json.NewEncoder(f).Encode(&this)
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "\t")
+	enc.Encode(&this)
 }
