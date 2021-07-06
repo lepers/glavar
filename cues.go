@@ -6,6 +6,7 @@ const startCue = "Главарь в здании. Для авторизации 
 const nostartCue = "Ты уже залогинен. /logout"
 const naxyuCue = "Иди нахуй тогда."
 const welcomeCue = "Добро пожаловать. /logout"
+const logoutCue = "Прощай! /login"
 const errorCue = "❗️ %v"
 const keywordIntroCue = `Ключевые слова
 
@@ -15,7 +16,7 @@ const keywordIntroCue = `Ключевые слова
 
 <code>/keywords брухля брюха бружа брухжа</code>`
 const keywordsCue = "Ключевые слова: %v"
-const subsiteIntroCue = `Сейчас ты читаешь чердак %s.
+const subsiteIntroCue = `Сейчас ты читаешь чердак <b>%s</b>.
 
 Просто передай название интересующей тебя подлепры и читай ее чердак!
 

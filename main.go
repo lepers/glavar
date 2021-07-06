@@ -22,24 +22,27 @@ var (
 	bot *tele.Bot
 
 	this = struct {
-		Cunts map[int]*User  `json:"cunts"`
-		LM    map[string]int `json:"lm"`
+		Cunts map[int]*User  `json:"cunts"` // lepers
+		LM    map[string]int `json:"lm"`    // last message
 	}{
 		Cunts: make(map[int]*User),
 		LM:    make(map[string]int),
 	}
 
+	// listening[subsite name] is true when actively polling
 	listening = map[string]bool{}
 
+	// base rate limiting
 	rateWindow = 10 * time.Minute
 	rates      = gcache.New(1000).LRU().Build()
-	// time since last error
-	errt = time.Now().Add(-time.Hour)
-	ø    = fmt.Sprintf
 
+	ø = fmt.Sprintf
+
+	// polling queue
 	pollq = make(chan string, 1)
 
-	ErrNotLogged = errors.New("not logged in")
+	ErrNotLogged = errors.New("вы не авторизованы")
+	ErrNotFound  = errors.New("подсайт не найден")
 )
 
 func main() {
@@ -82,13 +85,20 @@ func main() {
 		save()
 
 		if !listening[u.Subsite] {
-			err = u.primo(u.Subsite)
-			if err != nil {
-				return c.Reply(ø(errorCue, err))
-			}
-			listening[u.Subsite] = true
+			pollq <- u.Subsite
 		}
 		return nil
+	})
+
+	bot.Handle("/logout", func(c tele.Context) error {
+		u, err := getuser(c)
+		if err != nil {
+			return c.Reply(welcomeCue)
+		}
+
+		delete(this.Cunts, u.T.ID)
+		save()
+		return c.Reply(logoutCue)
 	})
 
 	bot.Handle("/keywords", func(c tele.Context) error {
@@ -138,6 +148,10 @@ func main() {
 		}
 		if !listening[subsite] {
 			pollq <- subsite
+			<-time.After(3 * time.Second)
+			if !listening[subsite] {
+				return c.Reply(ø(errorCue, ErrNotFound))
+			}
 		}
 		u.Subsite = subsite
 		save()

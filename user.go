@@ -144,6 +144,10 @@ func (u *User) personal(text string) bool {
 }
 
 func (u *User) primo(subsite string) error {
+	if !listening[subsite] && !u.subsiteExists(subsite) {
+		return ErrNotFound
+	}
+
 	err := u.poll(subsite)
 	if err != nil {
 		return err
@@ -169,6 +173,8 @@ func (u *User) primo(subsite string) error {
 }
 
 func (u *User) poll(subsite string) error {
+	defer save()
+
 	path := u.api("/ajax/chat/load/", subsite)
 	form := map[string]string{
 		"last_message_id": strconv.Itoa(this.LM[subsite]),
@@ -191,8 +197,6 @@ func (u *User) poll(subsite string) error {
 	if err != nil {
 		return errors.Wrap(err, "updates could not be decoded")
 	}
-
-	defer save()
 
 	for _, msg := range schema.Messages {
 		this.LM[subsite] = msg.ID
@@ -291,4 +295,21 @@ func (u *User) upload(c tele.Context, f string, r io.Reader) (string, error) {
 		return "", c.Reply(ø(errorCue, payload))
 	}
 	return "https://idiod.video/" + payload.URL, nil
+}
+
+func (u *User) subsiteExists(subsite string) bool {
+	if subsite == "" {
+		return true
+	}
+	path := "https://"+subsite+".leprosorium.ru"
+	client := u.outbound()
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+        return http.ErrUseLastResponse
+    }
+	resp, err := client.Get(path)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == 200
 }
