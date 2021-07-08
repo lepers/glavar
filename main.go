@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math/rand"
 	"os"
 	"strings"
 	"time"
@@ -36,7 +37,8 @@ var (
 
 	// base rate limiting
 	rateWindow = 10 * time.Minute
-	rates      = gcache.New(1000).LRU().Build()
+	rates      = gcache.New(2000).LRU().Build()
+	black      = gcache.New(1000).LRU().Build()
 
 	ø = fmt.Sprintf
 
@@ -164,6 +166,27 @@ func main() {
 			return c.Reply(ø(subsiteChangedCue, "главную"))
 		}
 		return c.Reply(ø(subsiteChangedCue, subsite))
+	})
+
+	bot.Handle("/ignore", func(c tele.Context) error {
+		u, err := getuser(c)
+		if err != nil {
+			return c.Reply(welcomeCue)
+		}
+
+		og := c.Message().ReplyTo
+		if og == nil {
+			return c.Reply(ignoringCue)
+		}
+
+		rand.Seed(time.Now().Unix())
+
+		i := strings.Index(og.Text, "<")
+		j := strings.Index(og.Text, ">")
+		k := u.Login + "~" + og.Text[i+1:j]
+		t := rand.Intn(int(24 * time.Hour))
+		black.SetWithExpire(k, 1, time.Duration(t))
+		return c.Reply("👍")
 	})
 
 	bot.Handle(tele.OnText, func(c tele.Context) error {

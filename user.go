@@ -134,7 +134,7 @@ func (u *User) broadcast(message string) error {
 		// best intentions
 		go func() {
 			c := context.Background()
-			fib, _ := retry.NewFibonacci(100*time.Millisecond)
+			fib, _ := retry.NewFibonacci(100 * time.Millisecond)
 			dt := retry.WithMaxDuration(1*time.Minute, fib)
 
 			retry.Do(c, dt, func(c context.Context) error {
@@ -244,6 +244,10 @@ func (u *User) poll(subsite string) error {
 
 		for id, u := range this.Cunts {
 			if u.Login == author || u.Subsite != subsite {
+				continue
+			}
+			_, err = black.Get(u.Login + "~" + author)
+			if err != gcache.KeyNotFoundError {
 				continue
 			}
 			opts := &tele.SendOptions{}
