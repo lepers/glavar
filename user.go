@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/bluele/gcache"
 	"github.com/pkg/errors"
+	"github.com/sethvargo/go-retry"
 	tele "gopkg.in/tucnak/telebot.v3"
 )
 
@@ -102,7 +104,7 @@ func (u *User) login(password string) error {
 }
 
 func (u *User) broadcast(message string) error {
-	key := u.Login + "\n" + message
+	key := u.Login + "\n\n" + message
 	value, err := rates.Get(key)
 	if err == gcache.KeyNotFoundError {
 		value = 0
@@ -110,7 +112,7 @@ func (u *User) broadcast(message string) error {
 	}
 	rate := value.(int) + 1
 	rates.Set(key, rate)
-	if rate > 4 {
+	if rate > 5 {
 		_, err := bot.Send(u.T, ratelimitCue)
 		return err
 	}
@@ -126,8 +128,23 @@ func (u *User) broadcast(message string) error {
 		pf.Add(k, v)
 	}
 
-	resp, err := u.outbound().PostForm(path, pf)
+	client := u.outbound()
+	resp, err := client.PostForm(path, pf)
 	if err != nil {
+		// best intentions
+		go func() {
+			c := context.Background()
+			fib, _ := retry.NewFibonacci(100*time.Millisecond)
+			dt := retry.WithMaxDuration(1*time.Minute, fib)
+
+			retry.Do(c, dt, func(c context.Context) error {
+				resp, err := client.PostForm(path, pf)
+				if err != nil {
+					return retry.RetryableError(err)
+				}
+				return resp.Body.Close()
+			})
+		}()
 		return err
 	}
 	resp.Body.Close()
@@ -156,15 +173,9 @@ func (u *User) primo(subsite string) error {
 		for range time.NewTicker(5 * time.Second).C {
 			err = u.poll(subsite)
 			if err != nil && err != io.EOF {
-				// retry
-				err = u.poll(subsite)
-				if err != nil {
-					fmt.Printf("primo fail for %s on %s\n",
-						u.Login, subsite)
-					listening[subsite] = false
-					pollq <- subsite
-					break
-				}
+				listening[subsite] = false
+				pollq <- subsite
+				break
 			}
 		}
 	}(u, subsite)
@@ -192,10 +203,22 @@ func (u *User) poll(subsite string) error {
 
 	var schema struct {
 		Messages []Message `json:"messages"`
+
+		Err []struct {
+			Code string `json:"code"`
+		} `json:"errors,omitempty"`
 	}
 	err = json.NewDecoder(resp.Body).Decode(&schema)
 	if err != nil {
 		return errors.Wrap(err, "updates could not be decoded")
+	}
+
+	if schema.Err != nil {
+		code := schema.Err[0].Code
+		if code == "not_authorized" {
+			return ErrForbidden
+		}
+		return errors.New("exotic api error: " + code)
 	}
 
 	for _, msg := range schema.Messages {
@@ -204,6 +227,7 @@ func (u *User) poll(subsite string) error {
 		if len(body) == 0 {
 			continue
 		}
+		body = strings.ReplaceAll(body, "\n", " ")
 
 		author := msg.User.Login
 
@@ -214,7 +238,7 @@ func (u *User) poll(subsite string) error {
 		}
 		rate := value.(int) + 1
 		rates.SetWithExpire(key, rate, rateWindow)
-		if rate > 5 {
+		if rate > 3 {
 			continue
 		}
 
@@ -301,11 +325,11 @@ func (u *User) subsiteExists(subsite string) bool {
 	if subsite == "" {
 		return true
 	}
-	path := "https://"+subsite+".leprosorium.ru"
+	path := "https://" + subsite + ".leprosorium.ru"
 	client := u.outbound()
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-        return http.ErrUseLastResponse
-    }
+		return http.ErrUseLastResponse
+	}
 	resp, err := client.Get(path)
 	if err != nil {
 		return false

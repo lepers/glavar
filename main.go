@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,12 +14,13 @@ import (
 
 	"github.com/bluele/gcache"
 	"github.com/pkg/errors"
+	"github.com/sethvargo/go-retry"
 	tele "gopkg.in/tucnak/telebot.v3"
 )
 
-const config = "/app/glavar.json"
-
 var (
+	config = os.Getenv("BOT_CONFIG")
+
 	bot *tele.Bot
 
 	this = struct {
@@ -43,15 +45,18 @@ var (
 
 	ErrNotLogged = errors.New("вы не авторизованы")
 	ErrNotFound  = errors.New("подсайт не найден")
+	ErrForbidden = errors.New("вход воспрещен")
 )
 
 func main() {
-	var err error
-
+	if config == "" {
+		config = "/app/glavar.json"
+	}
 	load()
 	save()
 	defer save()
 
+	var err error
 	bot, err = tele.NewBot(tele.Settings{
 		Token:     os.Getenv("BOT_TOKEN"),
 		Poller:    &tele.LongPoller{Timeout: 5 * time.Second},
@@ -185,22 +190,14 @@ func main() {
 			b.WriteRune(r)
 			if b.Len() == b.Cap() {
 				if err := u.broadcast(b.String()); err != nil {
-					// retry
-					err = u.broadcast(b.String())
-					if err != nil {
-						return c.Reply(ø(errorCue, err))
-					}
+					return c.Reply(ø(errorCue, err))
 				}
 				b.Reset()
 			}
 		}
 		if b.Len() > 0 {
 			if err := u.broadcast(b.String()); err != nil {
-				// retry
-				err = u.broadcast(b.String())
-				if err != nil {
-					return c.Reply(ø(errorCue, err))
-				}
+				return c.Reply(ø(errorCue, err))
 			}
 		}
 		return nil
@@ -215,14 +212,7 @@ func main() {
 
 	go func() {
 		for subsite := range pollq {
-			for _, u := range this.Cunts {
-				if !u.logged() {
-					continue
-				}
-				if err := u.primo(subsite); err == nil {
-					break
-				}
-			}
+			go primo(subsite)
 		}
 	}()
 
@@ -237,6 +227,43 @@ func main() {
 	}()
 
 	bot.Start()
+}
+
+func primo(subsite string) {
+	var (
+		c = context.Background()
+
+		fib, _ = retry.NewFibonacci(1 * time.Second)
+		dt     = retry.WithMaxDuration(15*time.Minute, fib)
+	)
+	err := retry.Do(c, dt, func(c context.Context) error {
+		var OG error
+
+		for _, u := range this.Cunts {
+			if !u.logged() {
+				continue
+			}
+
+			err := u.primo(subsite)
+			switch err {
+			case ErrNotFound:
+			case ErrForbidden:
+			case nil:
+				return nil
+			default:
+				OG = err
+			}
+		}
+		if OG != nil {
+			return retry.RetryableError(OG)
+		}
+		return nil
+	})
+
+	if err != nil {
+		fmt.Println(err)
+		panic("primo(" + subsite + ") failed")
+	}
 }
 
 func mediaOf(msg *tele.Message) (string, io.Reader) {
@@ -276,11 +303,7 @@ func handleMedia(c tele.Context) error {
 		}
 	}
 	if err := u.broadcast(message); err != nil {
-		// retry
-		err = u.broadcast(message)
-		if err != nil {
-			return c.Reply(ø(errorCue, err))
-		}
+		return c.Reply(ø(errorCue, err))
 	}
 	return nil
 }
