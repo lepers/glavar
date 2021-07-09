@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/ioutil"
 	"math/rand"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -20,7 +21,9 @@ import (
 )
 
 var (
-	config = os.Getenv("BOT_CONFIG")
+	config   = os.Getenv("BOT_CONFIG")
+	yandexId = os.Getenv("YANDEX_ID")
+	yandex   = ""
 
 	bot *tele.Bot
 
@@ -45,9 +48,10 @@ var (
 	// polling queue
 	pollq = make(chan string, 1)
 
-	ErrNotLogged = errors.New("вы не авторизованы")
-	ErrNotFound  = errors.New("подсайт не найден")
-	ErrForbidden = errors.New("вход воспрещен")
+	ErrNotLogged    = errors.New("вы не авторизованы")
+	ErrNotFound     = errors.New("подсайт не найден")
+	ErrForbidden    = errors.New("вход воспрещен")
+	ErrVoiceTooLong = errors.New("голосовое длиннее 30 сек")
 )
 
 func main() {
@@ -183,6 +187,9 @@ func main() {
 
 		i := strings.Index(og.Text, "<")
 		j := strings.Index(og.Text, ">")
+		if i < 0 || j < 0 {
+			return nil
+		}
 		k := u.Login + "~" + og.Text[i+1:j]
 		t := rand.Intn(int(24 * time.Hour))
 		black.SetWithExpire(k, 1, time.Duration(t))
@@ -229,6 +236,75 @@ func main() {
 	bot.Handle(tele.OnPhoto, handleMedia)
 	bot.Handle(tele.OnVideo, handleMedia)
 	bot.Handle(tele.OnAnimation, handleMedia)
+	bot.Handle(tele.OnVoice, func(c tele.Context) error {
+		if yandex == "" {
+			return c.Delete()
+		}
+
+		u, err := getuser(c)
+		if err != nil {
+			return c.Reply(welcomeCue)
+		}
+
+		rate, err := rates.Get("@"+u.Login)
+		if err == gcache.KeyNotFoundError {
+			rates.SetWithExpire("@"+u.Login, 0, rateWindow)
+			rate = 0
+		}
+		n := rate.(int)
+		if n > 10 {
+			return c.Reply(ratelimitCue)
+		}
+
+		voc := c.Message().Voice
+		if voc.Duration > 30 {
+			return c.Reply(ø(errorCue, ErrVoiceTooLong))
+		}
+
+		r, err := bot.File(&voc.File)
+		if err != nil {
+			return c.Reply(ø(errorCue, err))
+		}
+
+		path := "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize?topic=general:rc&folderId=" + yandexId
+		req, _ := http.NewRequest("POST", path, r)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Add("Authorization", "Bearer "+yandex)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return c.Reply(ø(errorCue, err))
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		data := struct {
+			Result string `json:"result"`
+		}{}
+		err = json.Unmarshal(b, &data)
+		if err != nil {
+			return c.Reply(ø(errorCue, err))
+		}
+
+		message := data.Result
+
+		og := c.Message().ReplyTo
+		if og != nil {
+			i := strings.Index(og.Text, "<")
+			j := strings.Index(og.Text, ">")
+			if j > 0 {
+				message = og.Text[i+1:j] + ": " + message
+			}
+		}
+
+		message = "🎙 " + message
+		err = u.broadcast(message)
+		if err != nil {
+			return c.Reply(ø(errorCue, err))
+		}
+
+		n++
+		rates.Set("@"+u.Login, n)
+		return c.Reply(message)
+	})
 	bot.Handle(tele.OnPinned, func(c tele.Context) error {
 		return c.Delete()
 	})
@@ -246,6 +322,36 @@ func main() {
 		}
 		for subsite := range subsites {
 			pollq <- subsite
+		}
+	}()
+
+	go func() {
+		api := os.Getenv("YANDEX_API")
+		if api == "" {
+			return
+		}
+		const path = "https://iam.api.cloud.yandex.net/iam/v1/tokens"
+		for {
+			data := `{"yandexPassportOauthToken":"` + api + `"}`
+			r := strings.NewReader(data)
+			resp, err := http.Post(path, "application/json", r)
+			if err != nil {
+				fmt.Println("yandex:", err)
+				continue
+			}
+
+			token := struct {
+				S string `json:"iamToken"`
+			}{}
+			err = json.NewDecoder(resp.Body).Decode(&token)
+			resp.Body.Close()
+			if err != nil {
+				fmt.Println("yandex:", err)
+				continue
+			}
+			yandex = token.S
+
+			<-time.After(time.Hour)
 		}
 	}()
 

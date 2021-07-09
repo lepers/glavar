@@ -1,6 +1,5 @@
 package main
 
-// cue(espondence)
 const cue = `<pre>&lt;%s&gt;</pre> %s`
 const startCue = "Главарь в здании. Для авторизации используй <code>/login Bruja_ mamkuebal</code> где Bruja_ это твой никнейм на лепре, а mamkuebal это твой пароль."
 const nostartCue = "Ты уже залогинен. /logout"
