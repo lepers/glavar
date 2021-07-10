@@ -251,7 +251,7 @@ func (u *User) poll(subsite string) error {
 			if err == gcache.KeyNotFoundError {
 				value = 0
 			}
-			rate := value.(int)+1
+			rate := value.(int) + 1
 			rates.SetWithExpire(url, rate, rateWindow)
 			if rate > 1 {
 				nopreview = true
@@ -278,7 +278,7 @@ func (u *User) poll(subsite string) error {
 
 			opts := &tele.SendOptions{
 				DisableWebPagePreview: nopreview,
-				DisableNotification: !personal,
+				DisableNotification:   !personal,
 			}
 
 			body := ø(cue, author, body)

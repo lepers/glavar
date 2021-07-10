@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -240,10 +241,6 @@ func main() {
 	bot.Handle(tele.OnVideo, handleMedia)
 	bot.Handle(tele.OnAnimation, handleMedia)
 	bot.Handle(tele.OnVoice, func(c tele.Context) error {
-		if yandex == "" {
-			return c.Delete()
-		}
-
 		u, err := getuser(c)
 		if err != nil {
 			return c.Reply(welcomeCue)
@@ -268,26 +265,53 @@ func main() {
 		if err != nil {
 			return c.Reply(ø(errorCue, err))
 		}
+		b, _ := ioutil.ReadAll(r)
 
-		path := "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize?topic=general:rc&folderId=" + yandexId
-		req, _ := http.NewRequest("POST", path, r)
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.Header.Add("Authorization", "Bearer "+yandex)
-		resp, err := http.DefaultClient.Do(req)
+		tmp, _ := ioutil.TempFile("", "voice*.mp4")
+		tmp.Close()
+		defer os.Remove(tmp.Name())
+
+		ffmpeg := exec.Command("ffmpeg",
+			"-loop", "1", "-i", "still.png",
+			"-i", "pipe:",
+			"-c:a", "aac",
+			"-c:v", "libx264",
+			"-shortest", "-y", tmp.Name())
+		stdin, _ := ffmpeg.StdinPipe()
+		if err := ffmpeg.Start(); err != nil {
+			return c.Reply(ø(errorCue, err))
+		}
+		io.Copy(stdin, bytes.NewBuffer(b))
+		stdin.Close()
+		if err := ffmpeg.Wait(); err != nil {
+			return c.Reply(ø(errorCue, err))
+		}
+
+		tmp, err = os.Open(tmp.Name())
+		defer tmp.Close()
+		voiceURL, err := u.upload(c, "voice.mp4", tmp)
 		if err != nil {
 			return c.Reply(ø(errorCue, err))
 		}
-		defer resp.Body.Close()
-		b, _ := io.ReadAll(resp.Body)
-		data := struct {
-			Result string `json:"result"`
-		}{}
-		err = json.Unmarshal(b, &data)
-		if err != nil {
-			return c.Reply(ø(errorCue, err))
-		}
 
-		message := data.Result
+		message := "🎙" + voiceURL
+
+		if yandex != "" {
+			path := "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize?topic=general:rc&folderId=" + yandexId
+			req, _ := http.NewRequest("POST", path, bytes.NewBuffer(b))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.Header.Add("Authorization", "Bearer "+yandex)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return c.Reply(ø(errorCue, err))
+			}
+			data := struct {
+				Result string `json:"result"`
+			}{}
+			json.NewDecoder(resp.Body).Decode(&data)
+			resp.Body.Close()
+			message = data.Result+" "+message
+		}
 
 		og := c.Message().ReplyTo
 		if og != nil {
@@ -298,7 +322,6 @@ func main() {
 			}
 		}
 
-		message = "🎙 " + message
 		err = u.broadcast(message)
 		if err != nil {
 			return c.Reply(ø(errorCue, err))
@@ -306,7 +329,7 @@ func main() {
 
 		n++
 		rates.Set("@"+u.Login, n)
-		return c.Reply(message)
+		return c.Reply(message, tele.NoPreview)
 	})
 	bot.Handle(tele.OnPinned, func(c tele.Context) error {
 		return c.Delete()
