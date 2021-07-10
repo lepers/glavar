@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -44,6 +45,8 @@ var (
 	black      = gcache.New(1000).LRU().Build()
 
 	ø = fmt.Sprintf
+
+	regularURL = regexp.MustCompile(`[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\+.~#?&//=]*)`)
 
 	// polling queue
 	pollq = make(chan string, 1)
@@ -246,7 +249,7 @@ func main() {
 			return c.Reply(welcomeCue)
 		}
 
-		rate, err := rates.Get("@"+u.Login)
+		rate, err := rates.Get("@" + u.Login)
 		if err == gcache.KeyNotFoundError {
 			rates.SetWithExpire("@"+u.Login, 0, rateWindow)
 			rate = 0

@@ -231,6 +231,7 @@ func (u *User) poll(subsite string) error {
 
 		author := msg.User.Login
 
+		// the message itself
 		key := author + "\n" + body
 		value, err := rates.Get(key)
 		if err == gcache.KeyNotFoundError {
@@ -242,6 +243,28 @@ func (u *User) poll(subsite string) error {
 			continue
 		}
 
+		// and now its entities
+		var noshow, nopreview bool
+		urls := regularURL.FindAllString(body, -1)
+		for _, url := range urls {
+			value, err := rates.Get(url)
+			if err == gcache.KeyNotFoundError {
+				value = 0
+			}
+			rate := value.(int)+1
+			rates.SetWithExpire(url, rate, rateWindow)
+			if rate > 1 {
+				nopreview = true
+			}
+			if rate > 3 {
+				noshow = true
+				break
+			}
+		}
+		if noshow {
+			continue
+		}
+
 		for id, u := range this.Cunts {
 			if u.Login == author || u.Subsite != subsite {
 				continue
@@ -250,14 +273,12 @@ func (u *User) poll(subsite string) error {
 			if err != gcache.KeyNotFoundError {
 				continue
 			}
-			opts := &tele.SendOptions{}
-			if rate > 1 {
-				opts.DisableWebPagePreview = true
-			}
 
-			uber := u.personal(body)
-			if !uber {
-				opts.DisableNotification = true
+			personal := u.personal(body)
+
+			opts := &tele.SendOptions{
+				DisableWebPagePreview: nopreview,
+				DisableNotification: !personal,
 			}
 
 			body := ø(cue, author, body)
@@ -273,7 +294,7 @@ func (u *User) poll(subsite string) error {
 					continue
 				}
 			}
-			if uber {
+			if personal {
 				bot.Pin(msg)
 			}
 		}
