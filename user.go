@@ -253,10 +253,10 @@ func (u *User) poll(subsite string) error {
 			}
 			rate := value.(int) + 1
 			rates.SetWithExpire(url, rate, rateWindow)
-			if rate > 1 {
+			if rate > 3 {
 				nopreview = true
 			}
-			if rate > 3 {
+			if rate > 5 {
 				noshow = true
 				break
 			}
