@@ -3,6 +3,7 @@ module github.com/lepers/glavar
 go 1.17
 
 require (
+	github.com/blevesearch/bleve v1.0.14 // indirect
 	github.com/bluele/gcache v0.0.2
 	github.com/mattn/go-sqlite3 v1.14.8 // indirect
 	github.com/olekukonko/tablewriter v0.0.5 // indirect
