@@ -21,3 +21,6 @@
 docker-compose.prod.yml
 glavar*
 *_amd64
+
+logec
+gpt

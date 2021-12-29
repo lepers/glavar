@@ -60,7 +60,7 @@ var (
 
 func main() {
 	if config == "" {
-		config = "/app/glavar.json"
+		config = "glavar.json"
 	}
 	load()
 	save()

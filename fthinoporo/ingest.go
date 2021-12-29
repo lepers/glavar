@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,64 +17,79 @@ import (
 
 const (
 	sql_CREATE_TABLE_logec = `
-CREATE TABLE "logec" (
-	"time"	INTEGER NOT NULL,
-	"login"	TEXT,
-	"text"	TEXT,
-	PRIMARY KEY("time")
-);`
+CREATE TABLE logec (tid, date, login, text);`
 
 	sql_INSERT_MESSAGE = `
-INSERT INTO "logec" ("time", "login", "text") VALUES (?, ?, ?);`
+INSERT INTO logec (tid, date, login, text) VALUES (?, ?, ?, ?);`
 )
 
 type M struct {
-	T     int64  `sql:"time"`
+	T     int64  `sql:"tid"`
+	Date  string `sql:"date"`
 	Login string `sql:"login"`
 	Text  string `sql:"text"`
+}
+
+func (m M) String() string {
+	return fmt.Sprintf("<%s> %s", m.Login, m.Text)
+}
+
+func (m M) uniq() string {
+	return strconv.FormatInt(m.T, 10)+m.Login+m.Text
 }
 
 func feed(bus chan M) {
 	path := os.Getenv("LOGEC")
 	for i := 1; ; i++ {
-		b, err := ioutil.ReadFile(fmt.Sprintf("%s/%d.html", path, i))
+		fname := fmt.Sprintf("%s/%d.html", path, i)
+		b, err := ioutil.ReadFile(fname)
 		if err != nil {
 			break
 		}
+		b = b[bytes.Index(b, []byte("<tbody>")):]
+		b = b[:bytes.Index(b, []byte("</tbody>"))]
 		tr := strings.Split(string(b), "</tr>")
 		for _, cellb := range tr {
 			if strings.Contains(cellb, "data-total-pages") {
 				continue
 			}
 			td := strings.Split(cellb, "</td>")
-			if len(td) == 0 || td[0] == "" {
+			if len(td) < 3 {
 				continue
 			}
 
 			t, login, opus := gett(td[0]), get(td[1]), get(td[2])
+			fmt.Println(t, login, opus)
 			opus, _ = html2text.FromString(opus, html2text.Options{})
-			bus <- M{t.UnixNano(), login, opus}
+			//	Mon Jan 2 15:04:05 -0700 MST 2006
+			tf := t.Format("2006/01/02 15:04")
+			bus <- M{t.Unix(), tf, login, opus}
 		}
 	}
 	close(bus)
 }
 
 func ingest() {
-	os.Remove("logec.sqlite")
-	db, err := sql.Open("sqlite3", "logec.sqlite")
+	db, err := sql.Open("sqlite3", "ingest.sqlite3")
 	if err != nil {
 		panic(err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(sql_CREATE_TABLE_logec); err != nil {
-		panic(err)
-	}
+	db.Exec(sql_CREATE_TABLE_logec)
 
 	bus, auto := make(chan M), make(chan M)
 	go feed(bus)
 	go func() {
 		dedup := make([]M, 1, 200)
+		uniq := make(map[string]bool)
 		for m := range bus {
+			id := m.uniq()
+			if _, ok := uniq[id]; ok {
+				continue
+			} else {
+				uniq[id] = true
+			}
+
 			tail := dedup[len(dedup)-1]
 			// duplicate
 			if tail.Text == m.Text {
@@ -85,13 +102,13 @@ func ingest() {
 			}
 
 			if len(dedup) > 1 {
-				qsize := time.Second / time.Duration(len(dedup))
-				for i, mm := range dedup {
-					if mm.T == 0 {
+				qsize := 60.0/float64(len(dedup))
+				for i, m := range dedup {
+					if m.T == 0 {
 						break
 					}
-					mm.T -= int64(time.Duration(i) * qsize)
-					auto <- mm
+					m.T -= int64(qsize*float64(i))
+					auto <- m
 				}
 				dedup = dedup[:1]
 				dedup[0] = m
@@ -104,13 +121,13 @@ func ingest() {
 			dedup[0] = m
 		}
 		if len(dedup) > 1 {
-			qsize := time.Second / time.Duration(len(dedup))
-			for i, mm := range dedup {
-				if mm.T == 0 {
+			qsize := 60.0/float64(len(dedup))
+			for i, m := range dedup {
+				if m.T == 0 {
 					break
 				}
-				mm.T -= int64(time.Duration(i) * qsize)
-				auto <- mm
+				m.T -= int64(qsize*float64(i))
+				auto <- m
 			}
 		}
 		close(auto)
@@ -128,7 +145,8 @@ func ingest() {
 		if _, ok := pushed[m.T]; ok {
 			continue
 		}
-		_, err = stmt.Exec(m.T, m.Login, m.Text)
+
+		_, err = stmt.Exec(m.T, m.Date, m.Login, m.Text)
 		if err != nil {
 			fmt.Println("!", m, err)
 			continue
