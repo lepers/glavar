@@ -11,17 +11,16 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/lib/pq"
 	"jaytaylor.com/html2text"
 )
 
-const (
-	sql_CREATE_TABLE_logec = `
+const sql_CREATE_TABLE_logec = `
 CREATE TABLE logec (tid, date, login, text);`
 
-	sql_INSERT_MESSAGE = `
-INSERT INTO logec (tid, date, login, text) VALUES (?, ?, ?, ?);`
-)
+const sql_INSERT_MESSAGE = `
+INSERT INTO logec (tid, date, login, text)
+VALUES (?, ?, ?, ?);`
 
 type M struct {
 	T     int64  `sql:"tid"`
@@ -35,7 +34,7 @@ func (m M) String() string {
 }
 
 func (m M) uniq() string {
-	return strconv.FormatInt(m.T, 10)+m.Login+m.Text
+	return strconv.FormatInt(m.T, 10) + m.Login + m.Text
 }
 
 func feed(bus chan M) {
@@ -70,12 +69,11 @@ func feed(bus chan M) {
 }
 
 func ingest() {
-	db, err := sql.Open("sqlite3", "ingest.sqlite3")
+	db, err := sql.Open("postgres", "host=postgresql user=badt dbname=lepra")
 	if err != nil {
 		panic(err)
 	}
 	defer db.Close()
-	db.Exec(sql_CREATE_TABLE_logec)
 
 	bus, auto := make(chan M), make(chan M)
 	go feed(bus)
@@ -102,12 +100,12 @@ func ingest() {
 			}
 
 			if len(dedup) > 1 {
-				qsize := 60.0/float64(len(dedup))
+				qsize := 60.0 / float64(len(dedup))
 				for i, m := range dedup {
 					if m.T == 0 {
 						break
 					}
-					m.T -= int64(qsize*float64(i))
+					m.T -= int64(qsize * float64(i))
 					auto <- m
 				}
 				dedup = dedup[:1]
@@ -121,12 +119,12 @@ func ingest() {
 			dedup[0] = m
 		}
 		if len(dedup) > 1 {
-			qsize := 60.0/float64(len(dedup))
+			qsize := 60.0 / float64(len(dedup))
 			for i, m := range dedup {
 				if m.T == 0 {
 					break
 				}
-				m.T -= int64(qsize*float64(i))
+				m.T -= int64(qsize * float64(i))
 				auto <- m
 			}
 		}

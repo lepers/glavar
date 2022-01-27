@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
+	"math/rand"
 	"mime/multipart"
 	"net/http"
 	"net/http/cookiejar"
@@ -39,26 +39,26 @@ type User struct {
 }
 
 type Message struct {
+	User    User   `json:"user"`
+	ID      int    `json:"id"`
 	Body    string `json:"body"`
 	Created int    `json:"created"`
-	ID      int    `json:"id"`
-	User    User   `json:"user"`
 }
 
 func (m Message) String() string {
-	return fmt.Sprintf("[%d@%s>%s]%d", m.ID, m.User.Login, m.Body)
+	return ø("%d <%s> %s", m.ID, m.User.Login, m.Body)
 }
 
 func (u *User) logged() bool {
 	return u.Csrf != ""
 }
 
-var lepra, _ = url.Parse("https://leprosorium.ru")
-
 func (u *User) outbound() *http.Client {
+	var lepraURL, _ = url.Parse("https://leprosorium.ru")
+
 	client := &http.Client{}
 	client.Jar, _ = cookiejar.New(nil)
-	client.Jar.SetCookies(lepra, u.Jar)
+	client.Jar.SetCookies(lepraURL, u.Jar)
 	return client
 }
 
@@ -119,7 +119,7 @@ func (u *User) broadcast(message string) error {
 
 	path := u.api("/ajax/chat/add/", u.Subsite)
 	form := map[string]string{
-		"last":       strconv.Itoa(this.LM[u.Subsite]),
+		"last":       strconv.Itoa(this.Lm[u.Subsite]),
 		"csrf_token": u.Csrf,
 		"body":       message,
 	}
@@ -188,7 +188,7 @@ func (u *User) poll(subsite string) error {
 
 	path := u.api("/ajax/chat/load/", subsite)
 	form := map[string]string{
-		"last_message_id": strconv.Itoa(this.LM[subsite]),
+		"last_message_id": strconv.Itoa(this.Lm[subsite]),
 		"csrf_token":      u.Csrf,
 	}
 	pf := url.Values{}
@@ -222,7 +222,7 @@ func (u *User) poll(subsite string) error {
 	}
 
 	for _, msg := range schema.Messages {
-		this.LM[subsite] = msg.ID
+		this.Lm[subsite] = msg.ID
 		body := strings.TrimSpace(msg.Body)
 		if len(body) == 0 {
 			continue
@@ -245,7 +245,7 @@ func (u *User) poll(subsite string) error {
 
 		// and now its entities
 		var noshow, nopreview bool
-		urls := regularURL.FindAllString(body, -1)
+		urls := simpleURL.FindAllString(body, -1)
 		for _, url := range urls {
 			value, err := rates.Get(url)
 			if err == gcache.KeyNotFoundError {
@@ -265,7 +265,50 @@ func (u *User) poll(subsite string) error {
 			continue
 		}
 
-		for id, u := range this.Cunts {
+		ismodel := func(name string) bool {
+			for _, model := range this.Models {
+				if model.User.Login == name {
+					return true
+				}
+			}
+			return false
+		}
+
+		// length := utf8.RuneCountInString(body)
+		if subsite == "" {
+			rand.Seed(time.Now().Unix())
+
+			for _, model := range this.Models {
+				modelname := model.User.Login
+				if author == modelname {
+					continue
+				}
+
+				if ismodel(author) && rand.Float32() > 0.2 {
+					continue
+				}
+
+				// special case
+				personal := false
+				for _, name := range model.User.Keywords {
+					if strings.Contains(body, name) {
+						personal = true
+						break
+					}
+				}
+				if personal {
+					model.feed(author, body)
+					continue
+				}
+
+				if rand.Float32() > 0.05 {
+					continue
+				}
+				model.feed(author, body)
+			}
+		}
+
+		for id, u := range this.Users {
 			if u.Login == author || u.Subsite != subsite {
 				continue
 			}
@@ -285,7 +328,7 @@ func (u *User) poll(subsite string) error {
 			msg, err := bot.Send(u.T, body, opts)
 			if err != nil {
 				if err == tele.ErrBlockedByUser {
-					delete(this.Cunts, id)
+					delete(this.Users, id)
 					continue
 				}
 				// retry

@@ -1,40 +1,38 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"math/rand"
-	"net/http"
 	"os"
-	"os/exec"
 	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/bluele/gcache"
+	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/sethvargo/go-retry"
 	tele "gopkg.in/tucnak/telebot.v3"
 )
 
 var (
-	config   = os.Getenv("BOT_CONFIG")
-	yandexId = os.Getenv("YANDEX_ID")
-	yandex   = ""
+	datadir = os.Getenv("BOT_HOME")
 
 	bot *tele.Bot
 
 	this = struct {
-		Cunts map[int]*User  `json:"cunts"` // lepers
-		LM    map[string]int `json:"lm"`    // last message
+		Users  map[int]*User     `json:"cunts"`
+		Models map[string]*Model `json:"models"`
+		Lm     map[string]int    `json:"lm"` // last message
 	}{
-		Cunts: make(map[int]*User),
-		LM:    make(map[string]int),
+		Users:  make(map[int]*User),
+		Models: make(map[string]*Model),
+		Lm:     make(map[string]int),
 	}
 
 	// listening[subsite name] is true when actively polling
@@ -45,22 +43,26 @@ var (
 	rates      = gcache.New(2000).LRU().Build()
 	black      = gcache.New(1000).LRU().Build()
 
-	ø = fmt.Sprintf
-
-	regularURL = regexp.MustCompile(`[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\+.~#?&//=]*)`)
+	ø         = fmt.Sprintf
+	simpleURL = regexp.MustCompile(`[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\+.~#?&//=]*)`)
 
 	// polling queue
 	pollq = make(chan string, 1)
+	// setup finished
+	setup = make(chan struct{}, 1)
 
 	ErrNotLogged    = errors.New("вы не авторизованы")
 	ErrNotFound     = errors.New("подсайт не найден")
 	ErrForbidden    = errors.New("вход воспрещен")
 	ErrVoiceTooLong = errors.New("голосовое длиннее 30 сек")
+
+	btnOK   = (*tele.ReplyMarkup)(nil).Data("👍", "model_ok")
+	btnMore = (*tele.ReplyMarkup)(nil).Data("✍️", "model_more")
 )
 
 func main() {
-	if config == "" {
-		config = "glavar.json"
+	if datadir == "" {
+		datadir = "."
 	}
 	load()
 	save()
@@ -87,7 +89,7 @@ func main() {
 		}
 
 		tid := c.Sender().ID
-		u := this.Cunts[tid]
+		u := this.Users[tid]
 		if u == nil {
 			u = new(User)
 			u.T = c.Sender()
@@ -96,7 +98,7 @@ func main() {
 		if err := u.login(args[1]); err != nil {
 			return c.Reply(err.Error())
 		}
-		this.Cunts[tid] = u
+		this.Users[tid] = u
 		save()
 
 		if !listening[u.Subsite] {
@@ -111,7 +113,7 @@ func main() {
 			return c.Reply(welcomeCue)
 		}
 
-		delete(this.Cunts, u.T.ID)
+		delete(this.Users, u.T.ID)
 		save()
 		return c.Reply(logoutCue)
 	})
@@ -200,37 +202,135 @@ func main() {
 		return c.Reply("👍")
 	})
 
+	bot.Handle("/model_login", func(c tele.Context) error {
+		if c.Sender().Username != "tucnak" {
+			return nil
+		}
+		args := c.Args()
+		if len(args) != 3 {
+			return c.Reply("username password port")
+		}
+
+		u := new(User)
+		u.Login = args[0]
+		if err := u.login(args[1]); err != nil {
+			return c.Reply(err.Error())
+		}
+		this.Models[u.Login] = &Model{
+			User: u,
+			Name: args[2],
+		}
+		save()
+		return c.Delete()
+	})
+
+	bot.Handle("/model", func(c tele.Context) error {
+		if c.Sender().Username != "tucnak" {
+			return nil
+		}
+		args := c.Args()
+		if len(args) != 2 {
+			return c.Reply("username on/off")
+		}
+
+		login, status := args[0], false
+		if args[1] == "on" {
+			status = true
+		}
+
+		if mod, ok := this.Models[login]; ok {
+			mod.Busy = status
+		}
+
+		save()
+		return c.Reply("👍")
+	})
+
+	bot.Handle("/bu", func(c tele.Context) error {
+		return sendAs(c, "bukofka")
+	})
+
+	bot.Handle("/chl", func(c tele.Context) error {
+		return sendAs(c, "chlenix")
+	})
+
+	bot.Handle(&btnOK, func(c tele.Context) error {
+		fid := c.Callback().Data
+		f, ok := replyFeeds[fid]
+		if !ok {
+			c.Delete()
+			return c.Send("🐔")
+		}
+
+		u, err := getuser(c)
+		if err != nil {
+			return c.Reply("😖")
+		}
+		m := &Model{u, f.bot, false}
+		go m.deliver(f.login, f.result)
+
+		delete(replyFeeds, fid)
+		bot.Delete(c.Callback().Message)
+		return c.Respond()
+	})
+
+	bot.Handle(&btnMore, func(c tele.Context) error {
+		cb := c.Callback()
+		fid := cb.Data
+		f, ok := replyFeeds[fid]
+		if !ok {
+			c.Delete()
+			return c.Send("🐔")
+		}
+
+		if f.busy {
+			return c.Respond(&tele.CallbackResponse{Text: busyCue})
+		}
+
+		u, err := getuser(c)
+		if err != nil {
+			return c.Reply("😖")
+		}
+
+		f.busy = true
+		replyFeeds[fid] = f
+		c.Notify(tele.Typing)
+
+		m := &Model{u, f.bot, false}
+		res := m.feed(f.login, f.prompt)
+		f.result = res
+		f.busy = false
+		replyFeeds[fid] = f
+
+		bot.Edit(cb.Message, strings.Join(res, "\n"), modelMenu(fid))
+		return c.Respond()
+	})
+
 	bot.Handle(tele.OnText, func(c tele.Context) error {
-		const bufsize = 4 * 255 // utf8 * limit
-
-		var b bytes.Buffer
-		b.Grow(bufsize)
-
 		u, err := getuser(c)
 		if err != nil {
 			return c.Reply(welcomeCue)
 		}
 
 		message := c.Text()
-		og := c.Message().ReplyTo
+		if strings.HasPrefix(message, "/") {
+			return c.Reply("🚬")
+		}
+
+		og, target := c.Message().ReplyTo, ""
 		if og != nil {
 			i := strings.Index(og.Text, "<")
 			j := strings.Index(og.Text, ">")
 			if j > 0 {
-				message = og.Text[i+1:j] + ": " + message
+				target = og.Text[i+1 : j]
 			}
 		}
-		for _, r := range message {
-			b.WriteRune(r)
-			if b.Len() == b.Cap() {
-				if err := u.broadcast(b.String()); err != nil {
-					return c.Reply(ø(errorCue, err))
-				}
-				b.Reset()
+
+		for i, message := range strings.Split(message, "\n") {
+			if i == 0 && target != "" {
+				message = target + ": " + message
 			}
-		}
-		if b.Len() > 0 {
-			if err := u.broadcast(b.String()); err != nil {
+			if err := u.broadcast(message); err != nil {
 				return c.Reply(ø(errorCue, err))
 			}
 		}
@@ -240,97 +340,6 @@ func main() {
 	bot.Handle(tele.OnPhoto, handleMedia)
 	bot.Handle(tele.OnVideo, handleMedia)
 	bot.Handle(tele.OnAnimation, handleMedia)
-	bot.Handle(tele.OnVoice, func(c tele.Context) error {
-		u, err := getuser(c)
-		if err != nil {
-			return c.Reply(welcomeCue)
-		}
-
-		rate, err := rates.Get("@" + u.Login)
-		if err == gcache.KeyNotFoundError {
-			rates.SetWithExpire("@"+u.Login, 0, rateWindow)
-			rate = 0
-		}
-		n := rate.(int)
-		if n > 10 {
-			return c.Reply(ratelimitCue)
-		}
-
-		voc := c.Message().Voice
-		if voc.Duration > 30 {
-			return c.Reply(ø(errorCue, ErrVoiceTooLong))
-		}
-
-		r, err := bot.File(&voc.File)
-		if err != nil {
-			return c.Reply(ø(errorCue, err))
-		}
-		b, _ := ioutil.ReadAll(r)
-
-		tmp, _ := ioutil.TempFile("", "voice*.mp4")
-		tmp.Close()
-		defer os.Remove(tmp.Name())
-
-		ffmpeg := exec.Command("ffmpeg",
-			"-loop", "1", "-i", "still.png",
-			"-i", "pipe:",
-			"-c:a", "aac",
-			"-c:v", "libx264",
-			"-shortest", "-y", tmp.Name())
-		stdin, _ := ffmpeg.StdinPipe()
-		if err := ffmpeg.Start(); err != nil {
-			return c.Reply(ø(errorCue, err))
-		}
-		io.Copy(stdin, bytes.NewBuffer(b))
-		stdin.Close()
-		if err := ffmpeg.Wait(); err != nil {
-			return c.Reply(ø(errorCue, err))
-		}
-
-		tmp, err = os.Open(tmp.Name())
-		defer tmp.Close()
-		voiceURL, err := u.upload(c, "voice.mp4", tmp)
-		if err != nil {
-			return c.Reply(ø(errorCue, err))
-		}
-
-		message := "🎙" + voiceURL
-
-		if yandex != "" {
-			path := "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize?topic=general:rc&folderId=" + yandexId
-			req, _ := http.NewRequest("POST", path, bytes.NewBuffer(b))
-			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-			req.Header.Add("Authorization", "Bearer "+yandex)
-			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				return c.Reply(ø(errorCue, err))
-			}
-			data := struct {
-				Result string `json:"result"`
-			}{}
-			json.NewDecoder(resp.Body).Decode(&data)
-			resp.Body.Close()
-			message = data.Result+" "+message
-		}
-
-		og := c.Message().ReplyTo
-		if og != nil {
-			i := strings.Index(og.Text, "<")
-			j := strings.Index(og.Text, ">")
-			if j > 0 {
-				message = og.Text[i+1:j] + ": " + message
-			}
-		}
-
-		err = u.broadcast(message)
-		if err != nil {
-			return c.Reply(ø(errorCue, err))
-		}
-
-		n++
-		rates.Set("@"+u.Login, n)
-		return c.Reply(message, tele.NoPreview)
-	})
 	bot.Handle(tele.OnPinned, func(c tele.Context) error {
 		return c.Delete()
 	})
@@ -343,7 +352,7 @@ func main() {
 
 	go func() {
 		subsites := map[string]bool{}
-		for _, u := range this.Cunts {
+		for _, u := range this.Users {
 			subsites[u.Subsite] = true
 		}
 		for subsite := range subsites {
@@ -351,37 +360,50 @@ func main() {
 		}
 	}()
 
-	go func() {
-		api := os.Getenv("YANDEX_API")
-		if api == "" {
-			return
-		}
-		const path = "https://iam.api.cloud.yandex.net/iam/v1/tokens"
-		for {
-			data := `{"yandexPassportOauthToken":"` + api + `"}`
-			r := strings.NewReader(data)
-			resp, err := http.Post(path, "application/json", r)
-			if err != nil {
-				fmt.Println("yandex:", err)
-				continue
-			}
-
-			token := struct {
-				S string `json:"iamToken"`
-			}{}
-			err = json.NewDecoder(resp.Body).Decode(&token)
-			resp.Body.Close()
-			if err != nil {
-				fmt.Println("yandex:", err)
-				continue
-			}
-			yandex = token.S
-
-			<-time.After(time.Hour)
-		}
-	}()
-
+	setup <- struct{}{}
 	bot.Start()
+}
+
+var replyFeeds = map[string]replyFeed{}
+
+func sendAs(c tele.Context, name string) error {
+	u, err := getuser(c)
+	if err != nil {
+		return c.Reply("😖")
+	}
+
+	og := c.Message().ReplyTo
+	if og == nil {
+		return c.Reply("🙈")
+	}
+
+	i := strings.Index(og.Text, "<")
+	j := strings.Index(og.Text, ">")
+	if j < 0 {
+		return c.Reply("🧐")
+	}
+
+	author, prompt := og.Text[i+1:j], og.Text[j+2:]
+	m := Model{
+		User: u,
+		Name: name,
+	}
+	res := m.feed(author, prompt)
+	fid := uuid.NewString()
+	replyFeeds[fid] = replyFeed{author, name, prompt, res, false}
+	return c.Reply(strings.Join(res, "\n"), modelMenu(fid))
+}
+
+func modelMenu(fid string) *tele.ReplyMarkup {
+	var (
+		menu = &tele.ReplyMarkup{ResizeKeyboard: true}
+		btn  = btnOK
+		btm  = btnMore
+	)
+	btn.Data = fid
+	btm.Data = fid
+	menu.Inline(menu.Row(btn, btm))
+	return menu
 }
 
 func primo(subsite string) {
@@ -394,7 +416,7 @@ func primo(subsite string) {
 	err := retry.Do(c, dt, func(c context.Context) error {
 		var OG error
 
-		for _, u := range this.Cunts {
+		for _, u := range this.Users {
 			if !u.logged() {
 				continue
 			}
@@ -465,20 +487,32 @@ func handleMedia(c tele.Context) error {
 
 func getuser(c tele.Context) (*User, error) {
 	tid := c.Sender().ID
-	u, ok := this.Cunts[tid]
+	u, ok := this.Users[tid]
 	if !ok || !u.logged() {
 		return nil, ErrNotLogged
 	}
 	return u, nil
 }
 
+func getleper(name string) *User {
+	for _, cunt := range this.Users {
+		if !cunt.logged() {
+			continue
+		}
+		if cunt.Login == name {
+			return cunt
+		}
+	}
+	return nil
+}
+
 func load() {
-	b, _ := ioutil.ReadFile(config)
+	b, _ := ioutil.ReadFile(datadir + "/glavar.json")
 	json.Unmarshal(b, &this)
 }
 
 func save() {
-	f, err := os.Create(config)
+	f, err := os.Create(datadir + "/glavar.json")
 	if err != nil {
 		panic(err)
 	}
