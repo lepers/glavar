@@ -2,10 +2,11 @@ version: "3.1"
 
 services:
   leprabot:
+    build: .
     restart: always
-    image: badtrousers/glavar
     environment:
-      BOT_TOKEN:
+      BOT_HOME=/app
+      BOT_TOKEN=
     volumes:
       - /app/glavar.json:/app/glavar.json
 

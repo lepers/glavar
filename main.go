@@ -81,7 +81,6 @@ func main() {
 	bot.Handle("/start", func(c tele.Context) error {
 		return c.Reply(startCue)
 	})
-
 	bot.Handle("/login", func(c tele.Context) error {
 		args := c.Args()
 		if len(args) != 2 {
@@ -106,7 +105,6 @@ func main() {
 		}
 		return c.Delete()
 	})
-
 	bot.Handle("/logout", func(c tele.Context) error {
 		u, err := getuser(c)
 		if err != nil {
@@ -117,7 +115,6 @@ func main() {
 		save()
 		return c.Reply(logoutCue)
 	})
-
 	bot.Handle("/keywords", func(c tele.Context) error {
 		args := c.Args()
 		if len(args) == 0 {
@@ -143,7 +140,6 @@ func main() {
 		save()
 		return c.Reply(ø(keywordsCue, u.Keywords))
 	})
-
 	bot.Handle("/subsite", func(c tele.Context) error {
 		u, err := getuser(c)
 		if err != nil {
@@ -177,7 +173,6 @@ func main() {
 		}
 		return c.Reply(ø(subsiteChangedCue, subsite))
 	})
-
 	bot.Handle("/ignore", func(c tele.Context) error {
 		u, err := getuser(c)
 		if err != nil {
@@ -201,7 +196,6 @@ func main() {
 		black.SetWithExpire(k, 1, time.Duration(t))
 		return c.Reply("👍")
 	})
-
 	bot.Handle("/model_login", func(c tele.Context) error {
 		if c.Sender().Username != "tucnak" {
 			return nil
@@ -223,7 +217,6 @@ func main() {
 		save()
 		return c.Delete()
 	})
-
 	bot.Handle("/model", func(c tele.Context) error {
 		if c.Sender().Username != "tucnak" {
 			return nil
@@ -245,15 +238,12 @@ func main() {
 		save()
 		return c.Reply("👍")
 	})
-
 	bot.Handle("/bu", func(c tele.Context) error {
 		return sendAs(c, "bukofka")
 	})
-
 	bot.Handle("/chl", func(c tele.Context) error {
 		return sendAs(c, "chlenix")
 	})
-
 	bot.Handle(&btnOK, func(c tele.Context) error {
 		fid := c.Callback().Data
 		f, ok := replyFeeds[fid]
@@ -273,7 +263,6 @@ func main() {
 		bot.Delete(c.Callback().Message)
 		return c.Respond()
 	})
-
 	bot.Handle(&btnMore, func(c tele.Context) error {
 		cb := c.Callback()
 		fid := cb.Data
@@ -305,7 +294,6 @@ func main() {
 		bot.Edit(cb.Message, strings.Join(res, "\n"), modelMenu(fid))
 		return c.Respond()
 	})
-
 	bot.Handle(tele.OnText, func(c tele.Context) error {
 		u, err := getuser(c)
 		if err != nil {
@@ -336,7 +324,6 @@ func main() {
 		}
 		return nil
 	})
-
 	bot.Handle(tele.OnPhoto, handleMedia)
 	bot.Handle(tele.OnVideo, handleMedia)
 	bot.Handle(tele.OnAnimation, handleMedia)
@@ -349,7 +336,6 @@ func main() {
 			go primo(subsite)
 		}
 	}()
-
 	go func() {
 		subsites := map[string]bool{}
 		for _, u := range this.Users {

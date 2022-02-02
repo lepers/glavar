@@ -83,7 +83,7 @@ func (model *Model) deliver(author string, res []string) {
 	for i, line := range res {
 		line = strings.TrimSpace(line)
 		n := utf8.RuneCountInString(line)
-		<-time.After(time.Duration(n/3) * time.Second)
+		<-time.After(time.Duration(n/6) * time.Second)
 
 		msg := line
 		if i == 0 {
@@ -105,7 +105,7 @@ func (model *Model) feed(author, body string) []string {
 	// 	return
 	// }
 
-	limit := 40 + rand.Intn(50)
+	limit := 100 + rand.Intn(50)
 	path := "http://" + model.Name + ":8000/prompt"
 	req, _ := http.NewRequest("GET", path, nil)
 	q := req.URL.Query()
