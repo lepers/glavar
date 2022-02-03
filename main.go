@@ -321,6 +321,7 @@ func main() {
 			if err := u.broadcast(message); err != nil {
 				return c.Reply(ø(errorCue, err))
 			}
+			<-time.After(500 * time.Millisecond)
 		}
 		return nil
 	})

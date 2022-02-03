@@ -8,5 +8,4 @@ services:
       BOT_HOME=/app
       BOT_TOKEN=
     volumes:
-      - /app/glavar.json:/app/glavar.json
-
+      - ./glavar.json:/app/glavar.json
