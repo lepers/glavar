@@ -13,11 +13,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
-	"github.com/bluele/gcache"
 	"github.com/pkg/errors"
 	"github.com/sethvargo/go-retry"
-	tele "gopkg.in/tucnak/telebot.v3"
+
+	tele "gopkg.in/telebot.v3"
 )
 
 type User struct {
@@ -42,7 +43,7 @@ type Message struct {
 	User    User   `json:"user"`
 	ID      int    `json:"id"`
 	Body    string `json:"body"`
-	Created int    `json:"created"`
+	Created int64  `json:"created"`
 }
 
 func (m Message) String() string {
@@ -104,17 +105,16 @@ func (u *User) login(password string) error {
 }
 
 func (u *User) broadcast(message string) error {
-	key := u.Login + "\n\n" + message
-	value, err := rates.Get(key)
-	if err == gcache.KeyNotFoundError {
-		value = 0
-		rates.SetWithExpire(key, 0, rateWindow)
+	h, rate := H(message, u.Login), 1
+	if v, err := rates.Get(h); err != expired {
+		rate += v.(int)
 	}
-	rate := value.(int) + 1
-	rates.Set(key, rate)
-	if rate > 5 {
-		_, err := bot.Send(u.T, ratelimitCue)
-		return err
+	rates.SetWithExpire(h, rate, rateWindow)
+	if rate > 3 {
+		return ErrOutboundSpam
+	}
+	if rate > 2 && u.T != nil {
+		bot.Send(u.T, ratelimitCue)
 	}
 
 	path := u.api("/ajax/chat/add/", u.Subsite)
@@ -133,11 +133,8 @@ func (u *User) broadcast(message string) error {
 	if err != nil {
 		// best intentions
 		go func() {
-			c := context.Background()
-			fib, _ := retry.NewFibonacci(100 * time.Millisecond)
-			dt := retry.WithMaxDuration(1*time.Minute, fib)
-
-			retry.Do(c, dt, func(c context.Context) error {
+			bo := backoff(100*time.Millisecond, time.Minute)
+			retry.Do(bg, bo, func(_ context.Context) error {
 				resp, err := client.PostForm(path, pf)
 				if err != nil {
 					return retry.RetryableError(err)
@@ -147,8 +144,8 @@ func (u *User) broadcast(message string) error {
 		}()
 		return err
 	}
-	resp.Body.Close()
-	return nil
+
+	return resp.Body.Close()
 }
 
 func (u *User) personal(text string) bool {
@@ -169,8 +166,9 @@ func (u *User) primo(subsite string) error {
 	if err != nil {
 		return err
 	}
-	go func(u *User, subsite string) {
-		for range time.NewTicker(5 * time.Second).C {
+
+	go func() {
+		for range time.NewTicker(polly).C {
 			err = u.poll(subsite)
 			if err != nil && err != io.EOF {
 				listening[subsite] = false
@@ -178,7 +176,7 @@ func (u *User) primo(subsite string) error {
 				break
 			}
 		}
-	}(u, subsite)
+	}()
 	listening[subsite] = true
 	return nil
 }
@@ -203,11 +201,11 @@ func (u *User) poll(subsite string) error {
 
 	var schema struct {
 		Messages []Message `json:"messages"`
-
-		Err []struct {
+		Err      []struct {
 			Code string `json:"code"`
 		} `json:"errors,omitempty"`
 	}
+
 	err = json.NewDecoder(resp.Body).Decode(&schema)
 	if err != nil {
 		return errors.Wrap(err, "updates could not be decoded")
@@ -222,98 +220,81 @@ func (u *User) poll(subsite string) error {
 	}
 
 	for _, msg := range schema.Messages {
+		// let's push things forward
 		this.Lm[subsite] = msg.ID
-		body := strings.TrimSpace(msg.Body)
-		if len(body) == 0 {
+
+		var (
+			sender = msg.User.Login
+			body   = msg.Body
+		)
+
+		body = strings.ReplaceAll(body, "\n", " ")
+		body = strings.ReplaceAll(body, "\u00a0", " ")
+		body = linkrx.ReplaceAllString(body, "$1")
+		body = strings.TrimSpace(body)
+		if utf8.RuneCountInString(body) == 0 {
 			continue
 		}
-		body = strings.ReplaceAll(body, "\n", " ")
+		msg.Body = body
 
-		author := msg.User.Login
-
-		// the message itself
-		key := author + "\n" + body
-		value, err := rates.Get(key)
-		if err == gcache.KeyNotFoundError {
-			value = 0
+		h, rate := H(sender, body), 1
+		if v, err := rates.Get(h); err != expired {
+			rate += v.(int)
 		}
-		rate := value.(int) + 1
-		rates.SetWithExpire(key, rate, rateWindow)
+		rates.SetWithExpire(h, rate, rateWindow)
 		if rate > 3 {
 			continue
 		}
 
-		// and now its entities
+		// and now the entities
 		var noshow, nopreview bool
-		urls := simpleURL.FindAllString(body, -1)
-		for _, url := range urls {
-			value, err := rates.Get(url)
-			if err == gcache.KeyNotFoundError {
-				value = 0
+		for _, url := range urlrx.FindAllString(body, -1) {
+			h, rate := H(url), 1
+			if v, err := rates.Get(url); err != expired {
+				rate += v.(int)
 			}
-			rate := value.(int) + 1
-			rates.SetWithExpire(url, rate, rateWindow)
-			if rate > 3 {
+			rates.SetWithExpire(h, rate, rateWindow)
+			if rate > 1 {
 				nopreview = true
 			}
-			if rate > 5 {
+			if rate > 3 {
 				noshow = true
 				break
 			}
 		}
+
+		if subsite == "" {
+			logiq <- msg
+
+			rand.Seed(time.Now().Unix())
+			for _, model := range this.Models {
+				// don't engage with itself
+				if model.User.Login == sender {
+					continue
+				}
+				// only 20% of messages re-engage other models
+				if ismodel(sender) && rand.Float32() > 0.2 {
+					continue
+				}
+				// final filter: 5% engagement for nonpersonal
+				if !model.personal(body) || rand.Float32() > 0.05 {
+					continue
+				}
+				model.feed(sender, body)
+			}
+		}
+
 		if noshow {
 			continue
 		}
 
-		ismodel := func(name string) bool {
-			for _, model := range this.Models {
-				if model.User.Login == name {
-					return true
-				}
-			}
-			return false
-		}
-
-		// length := utf8.RuneCountInString(body)
-		if subsite == "" {
-			rand.Seed(time.Now().Unix())
-
-			for _, model := range this.Models {
-				modelname := model.User.Login
-				if author == modelname {
-					continue
-				}
-
-				if ismodel(author) && rand.Float32() > 0.2 {
-					continue
-				}
-
-				// special case
-				personal := false
-				for _, name := range model.User.Keywords {
-					if strings.Contains(body, name) {
-						personal = true
-						break
-					}
-				}
-				if personal {
-					model.feed(author, body)
-					continue
-				}
-
-				if rand.Float32() > 0.05 {
-					continue
-				}
-				model.feed(author, body)
-			}
-		}
-
 		for id, u := range this.Users {
-			if u.Login == author || u.Subsite != subsite {
+			if u.Login == sender || u.Subsite != subsite {
 				continue
 			}
-			_, err = black.Get(u.Login + "~" + author)
-			if err != gcache.KeyNotFoundError {
+
+			h := H(u.Login, sender)
+			if _, err = rates.Get(h); err != expired {
 				continue
 			}
 
@@ -324,7 +305,7 @@ func (u *User) poll(subsite string) error {
 				DisableNotification:   !personal,
 			}
 
-			body := ø(cue, author, body)
+			body := ø(cue, sender, body)
 			msg, err := bot.Send(u.T, body, opts)
 			if err != nil {
 				if err == tele.ErrBlockedByUser {

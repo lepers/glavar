@@ -1,19 +1,15 @@
-module github.com/lepers/glavar
+module glavar
 
 go 1.16
 
 require (
-	github.com/blevesearch/bleve v1.0.14
 	github.com/bluele/gcache v0.0.2
 	github.com/google/uuid v1.3.0
-	github.com/jmoiron/sqlx v1.3.4
-	github.com/lib/pq v1.10.4
-	github.com/mattn/go-sqlite3 v1.14.8 // indirect
-	github.com/olekukonko/tablewriter v0.0.5 // indirect
+	github.com/jackc/pgx/v4 v4.15.0
+	github.com/lib/pq v1.10.4 // indirect
 	github.com/pkg/errors v0.9.1
-	github.com/sethvargo/go-retry v0.1.0
-	github.com/ssor/bom v0.0.0-20170718123548-6386211fdfcf // indirect
-	golang.org/x/net v0.0.0-20210716203947-853a461950ff // indirect
-	gopkg.in/tucnak/telebot.v3 v3.0.0-20210705112529-7e3a68249a0b
-	jaytaylor.com/html2text v0.0.0-20200412013138-3577fbdbcff7
+	github.com/sethvargo/go-retry v0.2.2
+	golang.org/x/crypto v0.0.0-20220209195652-db638375bc3a // indirect
+	golang.org/x/text v0.3.7 // indirect
+	gopkg.in/telebot.v3 v3.0.0
 )
